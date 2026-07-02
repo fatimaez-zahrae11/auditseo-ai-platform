@@ -72,6 +72,7 @@ Planned tests:
 
 
 detailed struct : 
+```text
 auditseo-ai-platform/
 │
 ├── backend/                         # TA PARTIE PRINCIPALE : Laravel API REST
@@ -331,3 +332,4 @@ auditseo-ai-platform/
 │
 └── docker-compose.yml               # Optionnel plus tard
     # Peut servir à lancer PostgreSQL, Laravel, frontend et ML ensemble
+```
