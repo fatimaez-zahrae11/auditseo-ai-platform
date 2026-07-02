@@ -2,6 +2,7 @@
 # Proposed Project Architecture
 
 ## Global Structure
+```text
 
 auditseo-ai-platform/
 ├── backend/      Laravel API REST
@@ -10,7 +11,7 @@ auditseo-ai-platform/
 ├── docs/         Documentation
 ├── README.md
 └── .gitignore
-
+```
 ## Backend
 
 The backend is the main part assigned to the student.
