@@ -1,15 +1,16 @@
 # Proposed Project Architecture
 
 ## Global Structure
+```text
 
 auditseo-ai-platform/
 ├── backend/      Laravel API REST
 ├── frontend/     React + Vite
-├── ml-service/   FastAPI + scikit-learn
+├── ml-service/   FastAPI + scikit-learn (Phase 2 — non prioritaire)
 ├── docs/         Documentation
 ├── README.md
 └── .gitignore
-
+```
 ## Backend
 
 The backend is the main part assigned to the student.
@@ -22,7 +23,7 @@ It will include:
 - SEO issue detection
 - Security: validation, authorization, IDOR protection, rate limiting
 - Unit and feature tests
-- Optional call to ML service
+- Optional call to ML service *(Phase 2 — non implémenté actuellement)*
 - Optional AI Helper for textual recommendations
 
 ## Frontend
@@ -37,16 +38,21 @@ It will consume the Laravel API and display:
 - Audit history
 - PDF export
 
-## ML Service
+## ML Service (Phase 2 — reporté)
 
-The ML service will be developed with Python, FastAPI and scikit-learn.
+Ce service n'est pas développé dans la phase actuelle du projet.
+Le backend fonctionne avec un moteur de règles fixes (rule-based) pour la
+classification de sévérité des problèmes SEO. Le service ML pourra être
+ajouté plus tard sans modifier l'architecture existante, via un appel HTTP
+optionnel depuis Laravel.
 
-Its role is to classify SEO issues by severity:
+Quand il sera développé (Python, FastAPI, scikit-learn), son rôle sera de
+classifier les problèmes SEO par sévérité :
 - critical
 - important
 - minor
 
-Laravel will call this service through HTTP.
+Laravel appellera ce service via HTTP.
 
 ## Testing Strategy
 
@@ -59,7 +65,7 @@ Planned tests:
 - Scoring tests
 - Authorization / IDOR tests
 - Rate limiting tests
-- ML client tests
+- ML client tests *(Phase 2 — non implémenté actuellement)*
 
 ## Notes
 
@@ -67,13 +73,15 @@ Planned tests:
 - API keys must never be hard-coded.
 - External AI is optional and limited to textual recommendations.
 - The core of the project remains the secure Laravel backend and SEO audit logic.
+- The ML service is deferred to Phase 2 and is not part of the current MVP.
 
 
 
-detailed struct : 
+detailed struct :
+```text
 auditseo-ai-platform/
 │
-├── backend/                         # TA PARTIE PRINCIPALE : Laravel API REST
+├── backend/                         # MA PARTIE PRINCIPALE : Laravel API REST
 │   │
 │   ├── app/
 │   │   ├── Http/
@@ -142,14 +150,15 @@ auditseo-ai-platform/
 │   │   │   │   # Analyse les balises title, meta, H1-H6, images, liens...
 │   │   │   │
 │   │   │   │   ├── SeoIssueDetectorService.php
-│   │   │   │   # Détecte les problèmes SEO à partir de l’analyse
+│   │   │   │   # Détecte les problèmes SEO à partir de l’analyse (règles fixes)
 │   │   │   │
 │   │   │   │   └── SeoScoringService.php
 │   │   │   │   # Calcule le score global et les sous-scores /100
 │   │   │   │
-│   │   │   ├── Ml/
+│   │   │   ├── Ml/                              # [PHASE 2 — non implémenté actuellement]
 │   │   │   │   └── MlClassifierClient.php
 │   │   │   │   # Appelle le service ML FastAPI pour classer la sévérité
+│   │   │   │   # (classification gérée par règles fixes dans la phase actuelle)
 │   │   │   │
 │   │   │   └── Ai/
 │   │   │       └── AiRecommendationService.php
@@ -204,8 +213,8 @@ auditseo-ai-platform/
 │   │       ├── SeoIssueDetectorServiceTest.php
 │   │       # Vérifie la détection des problèmes SEO
 │   │
-│   │       └── MlClassifierClientTest.php
-│   │       # Vérifie l’appel ou le mock du service ML
+│   │       └── MlClassifierClientTest.php          # [PHASE 2 — non implémenté actuellement]
+│   │       # Vérifie l'appel ou le mock du service ML
 │   │
 │   ├── .env
 │   # Fichier local secret : DB password, API keys, token secret
@@ -269,7 +278,10 @@ auditseo-ai-platform/
 │   └── vite.config.js
 │       # Configuration Vite
 │
-├── ml-service/                      # SERVICE MACHINE LEARNING : Python + FastAPI
+├── ml-service/                      # SERVICE MACHINE LEARNING : Python + FastAPI (PHASE 2 — non implémenté)
+│   │
+│   │   # Ce dossier documente l'architecture cible future.
+│   │   # Il n'est pas développé dans la phase actuelle du projet.
 │   │
 │   ├── app/
 │   │   ├── main.py
@@ -317,7 +329,7 @@ auditseo-ai-platform/
 │   # Notes SQL Injection, XSS, IDOR, rate limiting, .env
 │   │
 │   ├── ml-service.md
-│   # Explication du modèle ML et de l’appel FastAPI
+│   # Explication du modèle ML cible et de l’appel FastAPI (Phase 2)
 │   │
 │   └── setup-guide.md
 │       # Guide d’installation locale et déploiement VPS
@@ -330,3 +342,4 @@ auditseo-ai-platform/
 │
 └── docker-compose.yml               # Optionnel plus tard
     # Peut servir à lancer PostgreSQL, Laravel, frontend et ML ensemble
+```
