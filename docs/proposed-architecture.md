@@ -1,3 +1,4 @@
+
 # Proposed Project Architecture
 
 ## Global Structure
@@ -77,7 +78,7 @@ Planned tests:
 
 
 
-detailed struct :
+
 ```text
 auditseo-ai-platform/
 │
