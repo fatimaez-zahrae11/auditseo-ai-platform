@@ -23,7 +23,7 @@ class AuthController extends Controller
         $token = $user->createToken('api-token')->plainTextToken;
 
         return response()->json([
-            'message' => 'Inscription réussie.',
+            'message' => 'Registration successful.',
             'user' => $user,
             'token' => $token,
         ], 201);
@@ -33,16 +33,16 @@ class AuthController extends Controller
     {
         $user = User::where('email', $request->validated('email'))->first();
 
-        if (!$user || !Hash::check($request->validated('password'), $user->password)) {
+        if (! $user || ! Hash::check($request->validated('password'), $user->password)) {
             return response()->json([
-                'message' => 'Email ou mot de passe incorrect.',
+                'message' => 'Invalid credentials.',
             ], 422);
         }
 
         $token = $user->createToken('api-token')->plainTextToken;
 
         return response()->json([
-            'message' => 'Connexion réussie.',
+            'message' => 'Login successful.',
             'user' => $user,
             'token' => $token,
         ]);
@@ -60,7 +60,7 @@ class AuthController extends Controller
         $request->user()->currentAccessToken()?->delete();
 
         return response()->json([
-            'message' => 'Déconnexion réussie.',
+            'message' => 'Logout successful.',
         ]);
     }
 }
