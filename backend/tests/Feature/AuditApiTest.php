@@ -62,7 +62,11 @@ class AuditApiTest extends TestCase
             ->assertCreated()
             ->assertJsonPath('audit.domain.user_id', $user->id)
             ->assertJsonPath('audit.domain.domain_name', 'example.com')
-            ->assertJsonPath('audit.global_score', 0)
+            ->assertJsonPath('audit.global_score', 100)
+            ->assertJsonPath('audit.technical_score', 100)
+            ->assertJsonPath('audit.content_score', 100)
+            ->assertJsonPath('audit.links_score', 100)
+            ->assertJsonPath('audit.performance_score', 100)
             ->assertJsonPath('raw_data.title', 'Example Page')
             ->assertJsonPath('raw_data.meta_description', 'Example description')
             ->assertJsonPath('raw_data.robots_txt_found', true)
@@ -74,7 +78,11 @@ class AuditApiTest extends TestCase
         ]);
         $this->assertDatabaseHas('audits', [
             'domain_id' => $response->json('audit.domain_id'),
-            'global_score' => 0,
+            'global_score' => 100,
+            'technical_score' => 100,
+            'content_score' => 100,
+            'links_score' => 100,
+            'performance_score' => 100,
         ]);
         $this->assertSame('Example Page', Audit::findOrFail($response->json('audit.id'))->raw_data['title']);
         Http::assertSentCount(3);
@@ -108,6 +116,7 @@ class AuditApiTest extends TestCase
         $response
             ->assertCreated()
             ->assertJsonPath('raw_data.robots_txt_found', false)
+            ->assertJsonPath('audit.technical_score', 80)
             ->assertJsonFragment(['title' => 'Missing robots.txt']);
         $this->assertDatabaseHas('audit_issues', ['title' => 'Missing robots.txt']);
     }
@@ -122,6 +131,7 @@ class AuditApiTest extends TestCase
         $response
             ->assertCreated()
             ->assertJsonPath('raw_data.sitemap_xml_found', false)
+            ->assertJsonPath('audit.technical_score', 80)
             ->assertJsonFragment(['title' => 'Missing sitemap.xml']);
         $this->assertDatabaseHas('audit_issues', ['title' => 'Missing sitemap.xml']);
     }
@@ -152,7 +162,10 @@ class AuditApiTest extends TestCase
 
         $response = $this->postJson('/api/audits', ['url' => 'https://example.com']);
 
-        $response->assertCreated()->assertJsonFragment(['title' => 'Missing page title']);
+        $response
+            ->assertCreated()
+            ->assertJsonPath('audit.content_score', 75)
+            ->assertJsonFragment(['title' => 'Missing page title']);
         $this->assertDatabaseHas('audit_issues', ['title' => 'Missing page title']);
     }
 
@@ -163,8 +176,57 @@ class AuditApiTest extends TestCase
 
         $response = $this->postJson('/api/audits', ['url' => 'https://example.com']);
 
-        $response->assertCreated()->assertJsonFragment(['title' => 'Missing meta description']);
+        $response
+            ->assertCreated()
+            ->assertJsonPath('audit.content_score', 80)
+            ->assertJsonFragment(['title' => 'Missing meta description']);
         $this->assertDatabaseHas('audit_issues', ['title' => 'Missing meta description']);
+    }
+
+    public function test_non_https_url_lowers_the_technical_score(): void
+    {
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'http://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('audit.technical_score', 60)
+            ->assertJsonFragment(['title' => 'Page does not use HTTPS']);
+    }
+
+    public function test_global_score_is_the_rounded_average_of_category_scores(): void
+    {
+        $this->responseHtml = '<html><head><meta name="description" content="Present"></head><body><h1>Heading</h1></body></html>';
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('audit.technical_score', 100)
+            ->assertJsonPath('audit.content_score', 75)
+            ->assertJsonPath('audit.links_score', 70)
+            ->assertJsonPath('audit.performance_score', 100)
+            ->assertJsonPath('audit.global_score', 86);
+    }
+
+    public function test_all_calculated_scores_remain_between_zero_and_one_hundred(): void
+    {
+        $this->responseHtml = '<html><body>'.str_repeat('<img src="image.jpg">', 30).'</body></html>';
+        $this->robotsStatus = 404;
+        $this->sitemapStatus = 404;
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'http://example.com/page']);
+        $response->assertCreated();
+
+        foreach (['global_score', 'technical_score', 'content_score', 'links_score', 'performance_score'] as $score) {
+            $value = $response->json("audit.{$score}");
+            $this->assertIsInt($value);
+            $this->assertGreaterThanOrEqual(0, $value);
+            $this->assertLessThanOrEqual(100, $value);
+        }
     }
 
     public function test_images_without_alt_text_create_an_audit_issue(): void

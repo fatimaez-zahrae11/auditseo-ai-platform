@@ -7,6 +7,7 @@ use App\Http\Requests\StoreAuditRequest;
 use App\Models\Audit;
 use App\Models\Domain;
 use App\Services\Seo\SeoCrawlerService;
+use App\Services\Seo\SeoScoringService;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,8 +15,11 @@ use RuntimeException;
 
 class AuditController extends Controller
 {
-    public function store(StoreAuditRequest $request, SeoCrawlerService $crawler): JsonResponse
-    {
+    public function store(
+        StoreAuditRequest $request,
+        SeoCrawlerService $crawler,
+        SeoScoringService $scoring,
+    ): JsonResponse {
         $url = $request->validated('url');
         $domainName = strtolower((string) parse_url($url, PHP_URL_HOST));
 
@@ -35,12 +39,10 @@ class AuditController extends Controller
             ], 502);
         }
 
+        $scores = $scoring->calculate($rawData);
+
         $audit = $domain->audits()->create([
-            'global_score' => 0,
-            'technical_score' => 0,
-            'content_score' => 0,
-            'links_score' => 0,
-            'performance_score' => 0,
+            ...$scores,
             'raw_data' => $rawData,
         ]);
 
