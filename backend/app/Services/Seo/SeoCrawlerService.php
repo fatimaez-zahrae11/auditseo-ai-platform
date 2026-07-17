@@ -122,6 +122,8 @@ class SeoCrawlerService
     /**
      * @return array<string, bool|int|string|null>
      */
+
+    # Recuperation des premiers elements SEO essentiels 
     private function extractSeoData(string $html, string $url): array
     {
         $document = new DOMDocument();
