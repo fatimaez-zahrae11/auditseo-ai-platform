@@ -35,4 +35,12 @@ return [
         ],
     ],
 
+    'ai' => [
+        'provider' => env('AI_PROVIDER'),
+        'base_url' => env('AI_BASE_URL'),
+        'chat_endpoint' => env('AI_CHAT_ENDPOINT'),
+        'model' => env('AI_MODEL'),
+        'api_key' => env('AI_API_KEY'),
+    ],
+
 ];
