@@ -20,5 +20,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/audits', [AuditController::class, 'store']);
     Route::get('/audits', [AuditController::class, 'index']);
     Route::get('/audits/{id}', [AuditController::class, 'show']);
-    Route::post('/audits/{audit}/recommendations', [AiRecommendationController::class, 'store']);
+    Route::post('/audits/{audit}/recommendations', [AiRecommendationController::class, 'store'])
+    ->middleware('throttle:5,1');
 });
