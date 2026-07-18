@@ -1,8 +1,8 @@
 <?php
 
-use App\Http\Controllers\Api\AuthController;
-use App\Http\Controllers\Api\AuditController;
 use App\Http\Controllers\Api\AiRecommendationController;
+use App\Http\Controllers\Api\AuditController;
+use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\HealthCheckController;
 use Illuminate\Support\Facades\Route;
 
@@ -20,6 +20,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/audits', [AuditController::class, 'store']);
     Route::get('/audits', [AuditController::class, 'index']);
     Route::get('/audits/{id}', [AuditController::class, 'show']);
+    Route::get('/audits/{audit}/recommendations', [AiRecommendationController::class, 'index']);
     Route::post('/audits/{audit}/recommendations', [AiRecommendationController::class, 'store'])
-    ->middleware('throttle:5,1');
+        ->middleware('throttle:5,1');
 });

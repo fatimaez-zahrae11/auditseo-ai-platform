@@ -11,6 +11,22 @@ use Illuminate\Http\Request;
 
 class AiRecommendationController extends Controller
 {
+    public function index(Request $request, int $audit): JsonResponse
+    {
+        $ownedAudit = Audit::query()
+            ->whereHas('domain', fn ($query) => $query->where('user_id', $request->user()->id))
+            ->findOrFail($audit);
+
+        $recommendations = $ownedAudit->aiRecommendations()
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->get();
+
+        return response()->json([
+            'recommendations' => $recommendations,
+        ]);
+    }
+
     public function store(
         Request $request,
         int $audit,

@@ -59,6 +59,71 @@ class AiRecommendationApiTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_unauthenticated_users_cannot_retrieve_recommendations(): void
+    {
+        $audit = $this->createAuditFor(User::factory()->create());
+
+        $this->getJson("/api/audits/{$audit->id}/recommendations")->assertUnauthorized();
+
+        Http::assertNothingSent();
+    }
+
+    public function test_an_authenticated_user_can_retrieve_their_stored_recommendations_newest_first(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        $olderRecommendation = $audit->aiRecommendations()->create([
+            'provider' => 'test-provider',
+            'prompt_summary' => 'Older recommendation',
+            'generated_text' => 'Update the title.',
+        ]);
+        $newerRecommendation = $audit->aiRecommendations()->create([
+            'provider' => 'test-provider',
+            'prompt_summary' => 'Newer recommendation',
+            'generated_text' => 'Improve internal links.',
+        ]);
+        Sanctum::actingAs($user);
+
+        $this->getJson("/api/audits/{$audit->id}/recommendations")
+            ->assertOk()
+            ->assertJsonCount(2, 'recommendations')
+            ->assertJsonPath('recommendations.0.id', $newerRecommendation->id)
+            ->assertJsonPath('recommendations.1.id', $olderRecommendation->id)
+            ->assertDontSee(self::AI_KEY);
+    }
+
+    public function test_a_user_cannot_retrieve_recommendations_for_another_users_audit(): void
+    {
+        $user = User::factory()->create();
+        $otherAudit = $this->createAuditFor(User::factory()->create());
+        $otherAudit->aiRecommendations()->create([
+            'provider' => 'test-provider',
+            'prompt_summary' => 'Private recommendation',
+            'generated_text' => 'Private recommendation text.',
+        ]);
+        Sanctum::actingAs($user);
+
+        $this->getJson("/api/audits/{$otherAudit->id}/recommendations")->assertNotFound();
+
+        Http::assertNothingSent();
+    }
+
+    public function test_retrieving_recommendations_does_not_call_the_external_ai_api(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        $audit->aiRecommendations()->create([
+            'provider' => 'test-provider',
+            'prompt_summary' => 'Stored recommendation',
+            'generated_text' => 'Use the stored recommendation.',
+        ]);
+        Sanctum::actingAs($user);
+
+        $this->getJson("/api/audits/{$audit->id}/recommendations")->assertOk();
+
+        Http::assertNothingSent();
+    }
+
     public function test_an_authenticated_user_can_generate_and_store_a_recommendation_for_their_audit(): void
     {
         $user = User::factory()->create();
