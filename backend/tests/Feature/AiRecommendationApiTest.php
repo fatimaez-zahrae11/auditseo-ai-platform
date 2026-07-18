@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\ApiUsageLog;
 use App\Models\Audit;
 use App\Models\Domain;
 use App\Models\User;
@@ -81,6 +82,13 @@ class AiRecommendationApiTest extends TestCase
             'provider' => 'test-provider',
             'generated_text' => 'Improve the title and add descriptive alt text.',
         ]);
+        $this->assertDatabaseHas('api_usage_logs', [
+            'user_id' => $user->id,
+            'provider' => 'test-provider',
+            'status' => 'success',
+            'status_code' => 200,
+            'error_message' => null,
+        ]);
         $this->assertNotEmpty($response->json('recommendation.prompt_summary'));
     }
 
@@ -135,6 +143,16 @@ class AiRecommendationApiTest extends TestCase
             ->assertDontSee(self::AI_KEY)
             ->assertDontSee('sensitive diagnostics');
         $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertDatabaseHas('api_usage_logs', [
+            'user_id' => $user->id,
+            'provider' => 'test-provider',
+            'status' => 'failed',
+            'status_code' => 500,
+            'error_message' => 'External AI request failed.',
+        ]);
+        $this->assertDatabaseMissing('api_usage_logs', [
+            'error_message' => 'Upstream failure containing sensitive diagnostics.',
+        ]);
     }
 
     public function test_api_key_is_not_exposed_in_a_successful_json_response(): void
@@ -146,6 +164,22 @@ class AiRecommendationApiTest extends TestCase
         $this->postJson("/api/audits/{$audit->id}/recommendations")
             ->assertCreated()
             ->assertDontSee(self::AI_KEY);
+    }
+
+    public function test_api_key_is_not_stored_in_api_usage_logs(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")->assertCreated();
+
+        $usageLog = ApiUsageLog::query()->sole();
+
+        $this->assertStringNotContainsString(
+            self::AI_KEY,
+            json_encode($usageLog->getAttributes(), JSON_THROW_ON_ERROR),
+        );
     }
 
     private function createAuditFor(User $user): Audit

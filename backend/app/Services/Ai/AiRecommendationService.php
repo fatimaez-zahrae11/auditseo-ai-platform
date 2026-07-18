@@ -3,8 +3,10 @@
 namespace App\Services\Ai;
 
 use App\Exceptions\AiRecommendationException;
+use App\Models\ApiUsageLog;
 use App\Models\Audit;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 class AiRecommendationService
@@ -21,7 +23,7 @@ class AiRecommendationService
         $apiKey = (string) config('services.ai.api_key');
 
         if (in_array('', [$provider, $baseUrl, $chatEndpoint, $model, $apiKey], true)) {
-            throw new AiRecommendationException();
+            throw new AiRecommendationException;
         }
 
         $audit->loadMissing(['domain', 'issues']);
@@ -50,24 +52,78 @@ class AiRecommendationService
                     ],
                 ]);
         } catch (Throwable) {
-            throw new AiRecommendationException();
+            $this->logUsage(
+                userId: $audit->domain?->user_id,
+                provider: $provider,
+                status: 'failed',
+                errorMessage: 'External AI request failed.',
+            );
+
+            throw new AiRecommendationException;
         }
 
         if (! $response->successful()) {
-            throw new AiRecommendationException();
+            $this->logUsage(
+                userId: $audit->domain?->user_id,
+                provider: $provider,
+                status: 'failed',
+                statusCode: $response->status(),
+                errorMessage: 'External AI request failed.',
+            );
+
+            throw new AiRecommendationException;
         }
 
         $generatedText = $response->json('choices.0.message.content');
 
         if (! is_string($generatedText) || trim($generatedText) === '') {
-            throw new AiRecommendationException();
+            $this->logUsage(
+                userId: $audit->domain?->user_id,
+                provider: $provider,
+                status: 'failed',
+                statusCode: $response->status(),
+                errorMessage: 'External AI response was invalid.',
+            );
+
+            throw new AiRecommendationException;
         }
+
+        $this->logUsage(
+            userId: $audit->domain?->user_id,
+            provider: $provider,
+            status: 'success',
+            statusCode: $response->status(),
+        );
 
         return [
             'provider' => $provider,
             'prompt_summary' => $promptSummary,
             'generated_text' => trim($generatedText),
         ];
+    }
+
+    private function logUsage(
+        ?int $userId,
+        string $provider,
+        string $status,
+        ?int $statusCode = null,
+        ?string $errorMessage = null,
+    ): void {
+        try {
+            ApiUsageLog::create([
+                'user_id' => $userId,
+                'provider' => $provider,
+                'status' => $status,
+                'status_code' => $statusCode,
+                'error_message' => $errorMessage,
+            ]);
+        } catch (Throwable) {
+            Log::warning('Unable to persist AI API usage log.', [
+                'provider' => $provider,
+                'status' => $status,
+                'status_code' => $statusCode,
+            ]);
+        }
     }
 
     private function buildPrompt(Audit $audit): string
