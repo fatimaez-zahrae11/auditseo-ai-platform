@@ -104,8 +104,8 @@ Request body:
 
 ```json
 {
-  "name": "Jane Developer",
-  "email": "jane@example.com",
+  "name": "TechGirl",
+  "email": "TechGirl@example.com",
   "password": "Password1"
 }
 ```
@@ -123,8 +123,8 @@ Successful response — `201 Created`:
   "message": "Registration successful.",
   "user": {
     "id": 1,
-    "name": "Jane Developer",
-    "email": "jane@example.com",
+    "name": "TechGirl",
+    "email": "TechGirl@example.com",
     "email_verified_at": null,
     "created_at": "2026-07-19T10:00:00.000000Z",
     "updated_at": "2026-07-19T10:00:00.000000Z"
@@ -151,7 +151,7 @@ Request body:
 
 ```json
 {
-  "email": "jane@example.com",
+  "email": "TechGirl@example.com",
   "password": "Password1"
 }
 ```
@@ -163,8 +163,8 @@ Successful response — `200 OK`:
   "message": "Login successful.",
   "user": {
     "id": 1,
-    "name": "Jane Developer",
-    "email": "jane@example.com",
+    "name": "TechGirl",
+    "email": "TechGirl@example.com",
     "email_verified_at": null,
     "created_at": "2026-07-19T10:00:00.000000Z",
     "updated_at": "2026-07-19T10:00:00.000000Z"
@@ -200,8 +200,8 @@ Successful response — `200 OK`:
 {
   "user": {
     "id": 1,
-    "name": "Jane Developer",
-    "email": "jane@example.com",
+    "name": "TechGirl",
+    "email": "TechGirl@example.com",
     "email_verified_at": null,
     "created_at": "2026-07-19T10:00:00.000000Z",
     "updated_at": "2026-07-19T10:00:00.000000Z"
