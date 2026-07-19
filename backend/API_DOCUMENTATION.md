@@ -675,11 +675,11 @@ Keep the current audit page usable, show a retry message, and avoid tight automa
 
 ## Important frontend notes
 
-- The frontend never calls OpenRouter, Anthropic, or another AI provider directly.
+- The frontend never calls AI provider directly .
 - The frontend never needs or receives the AI API key.
 - Use Laravel's `POST /audits/{audit}/recommendations` endpoint to generate a recommendation.
 - Laravel stores each successfully generated recommendation.
-- Use `GET /audits/{audit}/recommendations` to retrieve stored results without spending another AI request.
+- Use `GET /audits/{audit}/recommendations` to retrieve stored results without spending another AI request( tokens on the API KEY ).
 - Display the `generated_text` field from the returned recommendation object.
 - Recommendations returned by the GET endpoint are ordered newest to oldest.
 - Dashboard statistics contain only data owned by the authenticated user.
