@@ -35,7 +35,9 @@ class AiRecommendationService
         );
 
         try {
-            $response = Http::timeout(30)
+            set_time_limit(180);
+            $response = Http::connectTimeout(10)
+                ->timeout(120)
                 ->acceptJson()
                 ->withToken($apiKey)
                 ->post(rtrim($baseUrl, '/').'/'.ltrim($chatEndpoint, '/'), [
