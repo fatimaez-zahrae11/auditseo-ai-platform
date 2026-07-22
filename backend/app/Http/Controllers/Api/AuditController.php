@@ -262,6 +262,96 @@ class AuditController extends Controller
             );
         }
 
+        if (($data['pages_with_http_errors_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'technical',
+                'Crawled pages return HTTP errors',
+                'important',
+                'Fix internal pages that return HTTP error status codes.',
+                "{$data['pages_with_http_errors_count']} crawled internal page(s) return HTTP errors.",
+            );
+        }
+
+        if (($data['pages_with_missing_title_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'content',
+                'Crawled pages are missing titles',
+                'important',
+                'Add unique descriptive title elements to every important internal page.',
+                "{$data['pages_with_missing_title_count']} crawled internal page(s) are missing title elements.",
+            );
+        }
+
+        if (($data['pages_with_missing_meta_description_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'content',
+                'Crawled pages are missing meta descriptions',
+                'important',
+                'Add concise meta descriptions to every important internal page.',
+                "{$data['pages_with_missing_meta_description_count']} crawled internal page(s) are missing meta descriptions.",
+            );
+        }
+
+        if (($data['pages_with_missing_h1_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'content',
+                'Crawled pages are missing H1 headings',
+                'important',
+                'Add one clear H1 heading to every important internal page.',
+                "{$data['pages_with_missing_h1_count']} crawled internal page(s) are missing H1 headings.",
+            );
+        }
+
+        if (($data['pages_with_noindex_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'indexability',
+                'Crawled pages are marked noindex',
+                'important',
+                'Remove noindex directives from internal pages that should appear in search results.',
+                "{$data['pages_with_noindex_count']} crawled internal page(s) are marked noindex.",
+            );
+        }
+
+        if (($data['pages_with_low_word_count_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'content',
+                'Crawled pages have low word count',
+                'important',
+                'Expand thin internal pages with useful, original content.',
+                "{$data['pages_with_low_word_count_count']} crawled internal page(s) have fewer than 300 visible words.",
+            );
+        }
+
+        if (($data['duplicate_titles_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'content',
+                'Duplicate page titles found',
+                'important',
+                'Give each crawled page a unique title aligned with its search intent.',
+                "{$data['duplicate_titles_count']} duplicate page title occurrence(s) were found.",
+            );
+        }
+
+        if (($data['duplicate_meta_descriptions_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'content',
+                'Duplicate meta descriptions found',
+                'important',
+                'Write unique meta descriptions for each crawled page.',
+                "{$data['duplicate_meta_descriptions_count']} duplicate meta description occurrence(s) were found.",
+            );
+        }
+
+        if (($data['duplicate_h1_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'content',
+                'Duplicate H1 headings found',
+                'minor',
+                'Use unique H1 headings that clearly describe each crawled page.',
+                "{$data['duplicate_h1_count']} duplicate H1 occurrence(s) were found.",
+            );
+        }
+
         if ($data['http_status_code'] !== 200) {
             $issues[] = $this->issue(
                 'technical',

@@ -33,6 +33,11 @@ class AuditApiTest extends TestCase
     private array $linkStatuses;
 
     /**
+     * @var array<string, array{body: string, status: int}>
+     */
+    private array $pageResponses;
+
+    /**
      * @var array<string, array{status: int, location: string}>
      */
     private array $redirects;
@@ -49,6 +54,16 @@ class AuditApiTest extends TestCase
         $this->sitemapBody = '<urlset></urlset>';
         $this->redirects = [];
         $this->linkStatuses = [];
+        $this->pageResponses = [
+            'https://example.com/about' => [
+                'body' => $this->contentHtml(
+                    'About AuditSEO Platform Overview',
+                    'A helpful about page with a sufficiently descriptive and unique meta description for crawler tests.',
+                    '<h1>About AuditSEO Platform</h1><h2>Overview</h2><p>'.str_repeat('about content ', 300).'</p>',
+                ),
+                'status' => 200,
+            ],
+        ];
 
         Http::fake(function (Request $request) {
             if (isset($this->redirects[$request->url()])) {
@@ -63,6 +78,12 @@ class AuditApiTest extends TestCase
 
             if (str_ends_with($request->url(), '/sitemap.xml')) {
                 return Http::response($this->sitemapBody, $this->sitemapStatus);
+            }
+
+            if (isset($this->pageResponses[$request->url()])) {
+                $page = $this->pageResponses[$request->url()];
+
+                return Http::response($page['body'], $page['status'], ['Content-Type' => 'text/html']);
             }
 
             if (isset($this->linkStatuses[$request->url()])) {
@@ -116,7 +137,7 @@ class AuditApiTest extends TestCase
             'performance_score' => 100,
         ]);
         $this->assertSame('Example Page', Audit::findOrFail($response->json('audit.id'))->raw_data['title']);
-        Http::assertSentCount(4);
+        Http::assertSentCount(5);
     }
 
     public function test_robots_txt_and_sitemap_xml_availability_are_stored_in_raw_data(): void
@@ -667,7 +688,7 @@ class AuditApiTest extends TestCase
             ->assertJsonPath('raw_data.links_count', 32)
             ->assertJsonPath('raw_data.internal_links_count', 32)
             ->assertJsonPath('raw_data.checked_links_count', 25);
-        Http::assertSentCount(28);
+        Http::assertSentCount(37);
     }
 
     public function test_a_page_without_links_creates_an_important_links_issue(): void
@@ -683,6 +704,256 @@ class AuditApiTest extends TestCase
                 'category' => 'links',
                 'severity' => 'important',
             ]);
+    }
+
+    public function test_multi_page_crawling_only_follows_same_host_internal_links(): void
+    {
+        $this->responseHtml = $this->htmlWithLinks(<<<'HTML'
+            <a href="/internal">Internal page</a>
+            <a href="https://other.example.com/external">External page</a>
+            <a href="mailto:hello@example.com">Email</a>
+            <a href="tel:+33123456789">Phone</a>
+            <a href="javascript:void(0)">Script</a>
+            <a href="#section">Fragment</a>
+            HTML);
+        $this->pageResponses['https://example.com/internal'] = [
+            'body' => $this->crawlerPageHtml(
+                'Internal SEO Landing Page',
+                'A unique meta description for the crawled internal SEO landing page used in crawler tests.',
+                '<h1>Internal SEO Landing Page</h1><h2>Section</h2><p>'.str_repeat('internal content ', 300).'</p>',
+            ),
+            'status' => 200,
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.crawl_enabled', true)
+            ->assertJsonPath('raw_data.crawl_max_pages', 10)
+            ->assertJsonPath('raw_data.crawl_max_depth', 2)
+            ->assertJsonPath('raw_data.discovered_internal_urls_count', 1)
+            ->assertJsonPath('raw_data.crawled_pages_count', 2)
+            ->assertJsonPath('raw_data.crawled_pages.1.url', 'https://example.com/internal');
+
+        $crawledUrls = array_column($response->json('raw_data.crawled_pages'), 'url');
+        $this->assertNotContains('https://other.example.com/external', $crawledUrls);
+    }
+
+    public function test_multi_page_crawling_deduplicates_urls_and_stores_compact_summaries(): void
+    {
+        $this->responseHtml = $this->htmlWithLinks(<<<'HTML'
+            <a href="/same">Same page</a>
+            <a href="/same#section">Same page fragment</a>
+            <a href="https://example.com/same/">Same page slash</a>
+            HTML);
+        $this->pageResponses['https://example.com/same'] = [
+            'body' => $this->crawlerPageHtml(
+                'Same Internal Page Title',
+                'A unique meta description for the same internal page used by crawler deduplication tests.',
+                '<h1>Same Internal Page</h1><h2>Section</h2><p>'.str_repeat('same content ', 300).'</p>',
+            ),
+            'status' => 200,
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.discovered_internal_urls_count', 1)
+            ->assertJsonPath('raw_data.crawled_pages_count', 2)
+            ->assertJsonPath('raw_data.crawled_pages.1.status_code', 200)
+            ->assertJsonPath('raw_data.crawled_pages.1.depth', 1)
+            ->assertJsonPath('raw_data.crawled_pages.1.title', 'Same Internal Page Title')
+            ->assertJsonPath('raw_data.crawled_pages.1.meta_description', 'A unique meta description for the same internal page used by crawler deduplication tests.')
+            ->assertJsonPath('raw_data.crawled_pages.1.h1', 'Same Internal Page')
+            ->assertJsonPath('raw_data.crawled_pages.1.is_indexable', true);
+
+        $this->assertGreaterThanOrEqual(300, $response->json('raw_data.crawled_pages.1.word_count'));
+        $this->assertArrayNotHasKey('visible_text_sample', $response->json('raw_data.crawled_pages.1'));
+    }
+
+    public function test_multi_page_crawling_respects_max_pages_limit(): void
+    {
+        $links = '';
+        for ($index = 1; $index <= 15; $index++) {
+            $links .= "<a href=\"/crawl-page-{$index}\">Page {$index}</a>";
+            $this->pageResponses["https://example.com/crawl-page-{$index}"] = [
+                'body' => $this->crawlerPageHtml(
+                    "Crawl Page {$index} Unique Title",
+                    "A unique meta description for crawled page number {$index} in the max pages test.",
+                    "<h1>Crawl Page {$index}</h1><h2>Section</h2><p>".str_repeat("page {$index} content ", 300).'</p>',
+                ),
+                'status' => 200,
+            ];
+        }
+        $this->responseHtml = $this->htmlWithLinks($links);
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.discovered_internal_urls_count', 15)
+            ->assertJsonPath('raw_data.crawled_pages_count', 10);
+    }
+
+    public function test_multi_page_crawling_respects_max_depth_limit(): void
+    {
+        $this->responseHtml = $this->htmlWithLinks('<a href="/level-1">Level 1</a>');
+        $this->pageResponses['https://example.com/level-1'] = [
+            'body' => $this->crawlerPageHtml(
+                'Level One Internal Page',
+                'A unique meta description for level one in the multi page depth crawler test.',
+                '<h1>Level One</h1><h2>Section</h2><p>'.str_repeat('level one content ', 300).'</p><a href="/level-2">Level 2</a>',
+            ),
+            'status' => 200,
+        ];
+        $this->pageResponses['https://example.com/level-2'] = [
+            'body' => $this->crawlerPageHtml(
+                'Level Two Internal Page',
+                'A unique meta description for level two in the multi page depth crawler test.',
+                '<h1>Level Two</h1><h2>Section</h2><p>'.str_repeat('level two content ', 300).'</p><a href="/level-3">Level 3</a>',
+            ),
+            'status' => 200,
+        ];
+        $this->pageResponses['https://example.com/level-3'] = [
+            'body' => $this->crawlerPageHtml(
+                'Level Three Internal Page',
+                'A unique meta description for level three that should not be crawled at depth three.',
+                '<h1>Level Three</h1><h2>Section</h2><p>'.str_repeat('level three content ', 300).'</p>',
+            ),
+            'status' => 200,
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.crawled_pages_count', 3)
+            ->assertJsonPath('raw_data.crawled_pages.2.depth', 2);
+
+        $this->assertNotContains('https://example.com/level-3', array_column($response->json('raw_data.crawled_pages'), 'url'));
+    }
+
+    public function test_multi_page_content_problems_create_issues(): void
+    {
+        $this->responseHtml = $this->htmlWithLinks(<<<'HTML'
+            <a href="/missing-title">Missing title</a>
+            <a href="/missing-meta">Missing meta</a>
+            <a href="/missing-h1">Missing H1</a>
+            <a href="/thin-page">Thin page</a>
+            HTML);
+        $this->pageResponses['https://example.com/missing-title'] = [
+            'body' => $this->crawlerPageHtml(
+                null,
+                'A unique meta description for an internal page that is missing its title element.',
+                '<h1>Missing Title Internal Page</h1><h2>Section</h2><p>'.str_repeat('content ', 300).'</p>',
+            ),
+            'status' => 200,
+        ];
+        $this->pageResponses['https://example.com/missing-meta'] = [
+            'body' => $this->crawlerPageHtml(
+                'Missing Meta Internal Page',
+                null,
+                '<h1>Missing Meta Internal Page</h1><h2>Section</h2><p>'.str_repeat('content ', 300).'</p>',
+            ),
+            'status' => 200,
+        ];
+        $this->pageResponses['https://example.com/missing-h1'] = [
+            'body' => $this->crawlerPageHtml(
+                'Missing H1 Internal Page',
+                'A unique meta description for an internal page that is missing its H1 heading.',
+                '<h2>Section</h2><p>'.str_repeat('content ', 300).'</p>',
+            ),
+            'status' => 200,
+        ];
+        $this->pageResponses['https://example.com/thin-page'] = [
+            'body' => $this->crawlerPageHtml(
+                'Thin Internal Page Content',
+                'A unique meta description for an internal thin content page in crawler tests.',
+                '<h1>Thin Internal Page</h1><h2>Section</h2><p>too little content</p>',
+            ),
+            'status' => 200,
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.pages_with_missing_title_count', 1)
+            ->assertJsonPath('raw_data.pages_with_missing_meta_description_count', 1)
+            ->assertJsonPath('raw_data.pages_with_missing_h1_count', 1)
+            ->assertJsonPath('raw_data.pages_with_low_word_count_count', 1)
+            ->assertJsonFragment(['title' => 'Crawled pages are missing titles', 'category' => 'content', 'severity' => 'important'])
+            ->assertJsonFragment(['title' => 'Crawled pages are missing meta descriptions', 'category' => 'content', 'severity' => 'important'])
+            ->assertJsonFragment(['title' => 'Crawled pages are missing H1 headings', 'category' => 'content', 'severity' => 'important'])
+            ->assertJsonFragment(['title' => 'Crawled pages have low word count', 'category' => 'content', 'severity' => 'important']);
+
+        $this->assertLessThan(65, $response->json('audit.content_score'));
+    }
+
+    public function test_multi_page_noindex_and_http_errors_create_issues(): void
+    {
+        $this->responseHtml = $this->htmlWithLinks(<<<'HTML'
+            <a href="/noindex-page">Noindex</a>
+            <a href="/server-error">Server error</a>
+            HTML);
+        $this->pageResponses['https://example.com/noindex-page'] = [
+            'body' => $this->crawlerPageHtml(
+                'Noindex Internal Page',
+                'A unique meta description for a noindex internal page in crawler tests.',
+                '<h1>Noindex Internal Page</h1><h2>Section</h2><p>'.str_repeat('content ', 300).'</p>',
+                'noindex, follow',
+            ),
+            'status' => 200,
+        ];
+        $this->pageResponses['https://example.com/server-error'] = [
+            'body' => '',
+            'status' => 500,
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.pages_with_noindex_count', 1)
+            ->assertJsonPath('raw_data.pages_with_http_errors_count', 1)
+            ->assertJsonFragment(['title' => 'Crawled pages are marked noindex', 'category' => 'indexability', 'severity' => 'important'])
+            ->assertJsonFragment(['title' => 'Crawled pages return HTTP errors', 'category' => 'technical', 'severity' => 'important']);
+    }
+
+    public function test_multi_page_duplicate_titles_meta_descriptions_and_h1_are_detected(): void
+    {
+        $this->responseHtml = $this->htmlWithLinks(<<<'HTML'
+            <a href="/duplicate-one">Duplicate one</a>
+            <a href="/duplicate-two">Duplicate two</a>
+            HTML);
+        foreach (['duplicate-one', 'duplicate-two'] as $slug) {
+            $this->pageResponses["https://example.com/{$slug}"] = [
+                'body' => $this->crawlerPageHtml(
+                    'Shared Duplicate Page Title',
+                    'A shared duplicate meta description for internal crawler duplicate detection tests.',
+                    '<h1>Shared Duplicate H1</h1><h2>Section</h2><p>'.str_repeat("{$slug} content ", 300).'</p>',
+                ),
+                'status' => 200,
+            ];
+        }
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.duplicate_titles_count', 1)
+            ->assertJsonPath('raw_data.duplicate_meta_descriptions_count', 1)
+            ->assertJsonPath('raw_data.duplicate_h1_count', 1)
+            ->assertJsonFragment(['title' => 'Duplicate page titles found', 'category' => 'content', 'severity' => 'important'])
+            ->assertJsonFragment(['title' => 'Duplicate meta descriptions found', 'category' => 'content', 'severity' => 'important'])
+            ->assertJsonFragment(['title' => 'Duplicate H1 headings found', 'category' => 'content', 'severity' => 'minor']);
     }
 
     public function test_missing_title_creates_an_audit_issue(): void
@@ -1018,6 +1289,27 @@ class AuditApiTest extends TestCase
                 <head>
                     <title>{$title}</title>
                     <meta name="description" content="{$description}">
+                    <meta name="viewport" content="width=device-width, initial-scale=1">
+                    <link rel="canonical" href="/page">
+                </head>
+                <body>{$body}</body>
+            </html>
+            HTML;
+    }
+
+    private function crawlerPageHtml(?string $title, ?string $description, string $body, ?string $robots = null): string
+    {
+        $titleTag = $title !== null ? "<title>{$title}</title>" : '';
+        $descriptionTag = $description !== null ? "<meta name=\"description\" content=\"{$description}\">" : '';
+        $robotsTag = $robots !== null ? "<meta name=\"robots\" content=\"{$robots}\">" : '';
+
+        return <<<HTML
+            <!doctype html>
+            <html lang="en">
+                <head>
+                    {$titleTag}
+                    {$descriptionTag}
+                    {$robotsTag}
                     <meta name="viewport" content="width=device-width, initial-scale=1">
                     <link rel="canonical" href="/page">
                 </head>

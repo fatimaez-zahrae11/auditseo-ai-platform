@@ -87,6 +87,31 @@ class SeoScoringServiceTest extends TestCase
         }
     }
 
+    public function test_multi_page_crawl_problems_reduce_and_clamp_scores(): void
+    {
+        $service = new SeoScoringService;
+        $healthyScores = $service->calculate($this->completeData());
+        $weakScores = $service->calculate([
+            ...$this->completeData(),
+            'pages_with_http_errors_count' => 4,
+            'pages_with_missing_title_count' => 3,
+            'pages_with_missing_meta_description_count' => 3,
+            'pages_with_missing_h1_count' => 3,
+            'pages_with_noindex_count' => 4,
+            'pages_with_low_word_count_count' => 5,
+            'duplicate_titles_count' => 3,
+            'duplicate_meta_descriptions_count' => 3,
+            'duplicate_h1_count' => 3,
+        ]);
+
+        $this->assertLessThan($healthyScores['technical_score'], $weakScores['technical_score']);
+        $this->assertLessThan($healthyScores['content_score'], $weakScores['content_score']);
+        foreach ($weakScores as $score) {
+            $this->assertGreaterThanOrEqual(0, $score);
+            $this->assertLessThanOrEqual(100, $score);
+        }
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -114,6 +139,15 @@ class SeoScoringServiceTest extends TestCase
             'sitemap_xml_is_valid' => true,
             'sitemap_non_https_urls_count' => 0,
             'sitemap_broken_urls_count' => 0,
+            'pages_with_http_errors_count' => 0,
+            'pages_with_missing_title_count' => 0,
+            'pages_with_missing_meta_description_count' => 0,
+            'pages_with_missing_h1_count' => 0,
+            'pages_with_noindex_count' => 0,
+            'pages_with_low_word_count_count' => 0,
+            'duplicate_titles_count' => 0,
+            'duplicate_meta_descriptions_count' => 0,
+            'duplicate_h1_count' => 0,
             'http_status_code' => 200,
             'redirect_count' => 0,
             'canonical_url' => 'https://example.com/page',

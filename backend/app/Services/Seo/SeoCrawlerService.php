@@ -27,6 +27,14 @@ class SeoCrawlerService
 
     private const MAX_CHILD_SITEMAPS = 10;
 
+    private const CRAWL_ENABLED = true;
+
+    private const MAX_CRAWL_PAGES = 10;
+
+    private const MAX_CRAWL_DEPTH = 2;
+
+    private const MAX_CRAWL_REDIRECTS = 3;
+
     private const GENERIC_ANCHOR_TEXTS = [
         'click here',
         'here',
@@ -69,9 +77,10 @@ class SeoCrawlerService
         );
         $data = [...$data, ...$sitemapData];
 
+        $multiPageData = $this->crawlInternalPages($finalUrl, $data);
         $linkCheckData = $this->checkLinks($data['checkable_links']);
         unset($data['checkable_links']);
-        $data = [...$data, ...$linkCheckData];
+        $data = [...$data, ...$linkCheckData, ...$multiPageData];
 
         return $data;
     }
@@ -471,6 +480,197 @@ class SeoCrawlerService
     }
 
     /**
+     * @param  array<string, mixed>  $mainPageData
+     * @return array<string, mixed>
+     */
+    private function crawlInternalPages(string $finalUrl, array $mainPageData): array
+    {
+        $maxPages = self::MAX_CRAWL_PAGES;
+        $maxDepth = self::MAX_CRAWL_DEPTH;
+        $host = strtolower((string) parse_url($finalUrl, PHP_URL_HOST));
+        $seen = [$this->normalizeUrl($finalUrl) => true];
+        $discovered = [];
+        $queue = [];
+        $crawledPages = [$this->compactCrawledPage($finalUrl, (int) $mainPageData['http_status_code'], 0, $mainPageData)];
+
+        foreach ($mainPageData['checkable_links'] as $link) {
+            $this->queueInternalCrawlUrl($queue, $discovered, $seen, $link, $host, 1, $maxDepth);
+        }
+
+        while ($queue !== [] && count($crawledPages) < $maxPages) {
+            $item = array_shift($queue);
+            $pageUrl = $item['url'];
+            $depth = $item['depth'];
+
+            try {
+                [$response, $finalPageUrl] = $this->fetchCrawlPage($pageUrl);
+            } catch (ConnectionException|RuntimeException|ValidationException) {
+                continue;
+            }
+
+            $pageData = $this->extractSeoData($response->body(), $finalPageUrl);
+            $pageData['is_indexable'] = $response->status() === 200 && $pageData['is_indexable'];
+            $crawledPages[] = $this->compactCrawledPage($finalPageUrl, $response->status(), $depth, $pageData);
+
+            if ($depth >= $maxDepth || ! $response->successful()) {
+                continue;
+            }
+
+            foreach ($pageData['checkable_links'] as $link) {
+                $this->queueInternalCrawlUrl($queue, $discovered, $seen, $link, $host, $depth + 1, $maxDepth);
+            }
+        }
+
+        return [
+            'crawl_enabled' => self::CRAWL_ENABLED,
+            'crawl_max_pages' => $maxPages,
+            'crawl_max_depth' => $maxDepth,
+            'crawled_pages_count' => count($crawledPages),
+            'discovered_internal_urls_count' => count($discovered),
+            'crawled_pages' => $crawledPages,
+            ...$this->summarizeCrawledPages($crawledPages),
+        ];
+    }
+
+    /**
+     * @param  array<int, array{url: string, depth: int}>  $queue
+     * @param  array<string, string>  $discovered
+     * @param  array<string, bool>  $seen
+     */
+    private function queueInternalCrawlUrl(
+        array &$queue,
+        array &$discovered,
+        array &$seen,
+        string $url,
+        string $host,
+        int $depth,
+        int $maxDepth,
+    ): void {
+        if ($depth > $maxDepth || strtolower((string) parse_url($url, PHP_URL_HOST)) !== $host) {
+            return;
+        }
+
+        $key = $this->normalizeUrl($url);
+        $discovered[$key] = $url;
+        if (isset($seen[$key])) {
+            return;
+        }
+
+        $seen[$key] = true;
+        $queue[] = ['url' => $url, 'depth' => $depth];
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool}
+     */
+    private function compactCrawledPage(string $url, int $statusCode, int $depth, array $data): array
+    {
+        return [
+            'url' => $url,
+            'status_code' => $statusCode,
+            'depth' => $depth,
+            'title' => $data['title'],
+            'meta_description' => $data['meta_description'],
+            'h1' => $data['h1_texts'][0] ?? null,
+            'word_count' => (int) $data['word_count'],
+            'is_indexable' => (bool) $data['is_indexable'],
+        ];
+    }
+
+    /**
+     * @param  array<int, array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool}>  $pages
+     * @return array<string, int>
+     */
+    private function summarizeCrawledPages(array $pages): array
+    {
+        $httpErrors = 0;
+        $missingTitles = 0;
+        $missingMetaDescriptions = 0;
+        $missingH1 = 0;
+        $noindex = 0;
+        $lowWordCount = 0;
+        $titles = [];
+        $metaDescriptions = [];
+        $h1s = [];
+
+        foreach ($pages as $page) {
+            if ($page['status_code'] === 200 && $page['title'] !== null) {
+                $titles[] = $this->normalizeComparableText($page['title']);
+            }
+
+            if ($page['status_code'] === 200 && $page['meta_description'] !== null) {
+                $metaDescriptions[] = $this->normalizeComparableText($page['meta_description']);
+            }
+
+            if ($page['status_code'] === 200 && $page['h1'] !== null) {
+                $h1s[] = $this->normalizeComparableText($page['h1']);
+            }
+
+            if ($page['depth'] === 0) {
+                continue;
+            }
+
+            if ($page['status_code'] >= 400) {
+                $httpErrors++;
+            }
+
+            if ($page['status_code'] === 200 && ! $page['is_indexable']) {
+                $noindex++;
+            }
+
+            if ($page['status_code'] !== 200) {
+                continue;
+            }
+
+            if ($page['title'] === null) {
+                $missingTitles++;
+            }
+
+            if ($page['meta_description'] === null) {
+                $missingMetaDescriptions++;
+            }
+
+            if ($page['h1'] === null) {
+                $missingH1++;
+            }
+
+            if ($page['word_count'] < 300) {
+                $lowWordCount++;
+            }
+        }
+
+        return [
+            'pages_with_http_errors_count' => $httpErrors,
+            'pages_with_missing_title_count' => $missingTitles,
+            'pages_with_missing_meta_description_count' => $missingMetaDescriptions,
+            'pages_with_missing_h1_count' => $missingH1,
+            'pages_with_noindex_count' => $noindex,
+            'pages_with_low_word_count_count' => $lowWordCount,
+            'duplicate_titles_count' => $this->duplicateValueCount($titles),
+            'duplicate_meta_descriptions_count' => $this->duplicateValueCount($metaDescriptions),
+            'duplicate_h1_count' => $this->duplicateValueCount($h1s),
+        ];
+    }
+
+    /**
+     * @param  array<int, string>  $values
+     */
+    private function duplicateValueCount(array $values): int
+    {
+        $counts = array_count_values(array_filter($values, fn (string $value): bool => $value !== ''));
+        $duplicates = 0;
+
+        foreach ($counts as $count) {
+            if ($count > 1) {
+                $duplicates += $count - 1;
+            }
+        }
+
+        return $duplicates;
+    }
+
+    /**
      * @return array{Response, string}
      */
     private function fetchResource(string $url): array
@@ -563,6 +763,10 @@ class SeoCrawlerService
      */
     private function extractSeoData(string $html, string $url): array
     {
+        if (trim($html) === '') {
+            $html = '<!doctype html><html><body></body></html>';
+        }
+
         $document = new DOMDocument;
         $previousErrorHandling = libxml_use_internal_errors(true);
         $document->loadHTML($html, LIBXML_NOERROR | LIBXML_NOWARNING | LIBXML_NONET);
@@ -756,7 +960,7 @@ class SeoCrawlerService
                 $externalCount++;
             }
 
-            $checkableLinks[$this->normalizeUrl($resolvedUrl)] = $resolvedUrl;
+            $checkableLinks[$this->normalizeUrl($resolvedUrl)] ??= $resolvedUrl;
         }
 
         return [
@@ -862,6 +1066,41 @@ class SeoCrawlerService
             $redirectUrl = $this->resolveCheckableHttpUrl($currentUrl, $location);
             if ($redirectUrl === null) {
                 return $response;
+            }
+
+            $currentUrl = $redirectUrl;
+            $redirectCount++;
+        }
+    }
+
+    /**
+     * @return array{Response, string}
+     */
+    private function fetchCrawlPage(string $url): array
+    {
+        $currentUrl = $url;
+        $redirectCount = 0;
+
+        while (true) {
+            $this->ensureUrlIsSafe($currentUrl);
+            $response = $this->linkCheckHttpClient()->get($currentUrl);
+
+            if (! $this->isRedirect($response)) {
+                return [$response, $currentUrl];
+            }
+
+            $location = trim((string) $response->header('Location'));
+            if ($location === '') {
+                return [$response, $currentUrl];
+            }
+
+            if ($redirectCount >= self::MAX_CRAWL_REDIRECTS) {
+                throw new RuntimeException('The crawled page exceeded the redirect limit.');
+            }
+
+            $redirectUrl = $this->resolveCheckableHttpUrl($currentUrl, $location);
+            if ($redirectUrl === null) {
+                return [$response, $currentUrl];
             }
 
             $currentUrl = $redirectUrl;

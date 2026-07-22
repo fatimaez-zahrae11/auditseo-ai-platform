@@ -60,6 +60,14 @@ class SeoScoringService
             $contentScore -= 10;
         }
 
+        $contentScore -= min(20, ((int) ($data['pages_with_missing_title_count'] ?? 0)) * 10);
+        $contentScore -= min(20, ((int) ($data['pages_with_missing_meta_description_count'] ?? 0)) * 8);
+        $contentScore -= min(20, ((int) ($data['pages_with_missing_h1_count'] ?? 0)) * 10);
+        $contentScore -= min(15, ((int) ($data['pages_with_low_word_count_count'] ?? 0)) * 5);
+        $contentScore -= min(20, ((int) ($data['duplicate_titles_count'] ?? 0)) * 10);
+        $contentScore -= min(20, ((int) ($data['duplicate_meta_descriptions_count'] ?? 0)) * 8);
+        $contentScore -= min(10, ((int) ($data['duplicate_h1_count'] ?? 0)) * 5);
+
         if (! $data['uses_https']) {
             $technicalScore -= 40;
         }
@@ -85,6 +93,8 @@ class SeoScoringService
         }
 
         $technicalScore -= min(30, ((int) ($data['sitemap_broken_urls_count'] ?? 0)) * 10);
+        $technicalScore -= min(30, ((int) ($data['pages_with_http_errors_count'] ?? 0)) * 10);
+        $technicalScore -= min(30, ((int) ($data['pages_with_noindex_count'] ?? 0)) * 10);
 
         if (($data['http_status_code'] ?? 200) !== 200) {
             $technicalScore -= 50;
