@@ -361,7 +361,7 @@ class AuditController extends Controller
             );
         }
 
-        if (($data['duplicate_titles_count'] ?? 0) > 0) {
+        if (($data['duplicate_title_groups'] ?? []) !== [] || ($data['duplicate_titles_count'] ?? 0) > 0) {
             $issues[] = $this->issue(
                 'content',
                 'Duplicate page titles found',
@@ -371,7 +371,7 @@ class AuditController extends Controller
             );
         }
 
-        if (($data['duplicate_meta_descriptions_count'] ?? 0) > 0) {
+        if (($data['duplicate_meta_description_groups'] ?? []) !== [] || ($data['duplicate_meta_descriptions_count'] ?? 0) > 0) {
             $issues[] = $this->issue(
                 'content',
                 'Duplicate meta descriptions found',
@@ -381,13 +381,53 @@ class AuditController extends Controller
             );
         }
 
-        if (($data['duplicate_h1_count'] ?? 0) > 0) {
+        if (($data['duplicate_h1_groups'] ?? []) !== [] || ($data['duplicate_h1_count'] ?? 0) > 0) {
             $issues[] = $this->issue(
                 'content',
                 'Duplicate H1 headings found',
                 'minor',
                 'Use unique H1 headings that clearly describe each crawled page.',
                 "{$data['duplicate_h1_count']} duplicate H1 occurrence(s) were found.",
+            );
+        }
+
+        if (($data['duplicate_content_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'content',
+                'Duplicate page content found',
+                'important',
+                'Consolidate duplicate pages or make each page substantially unique and useful.',
+                "{$data['duplicate_content_count']} duplicate content occurrence(s) were found.",
+            );
+        }
+
+        if (($data['thin_content_pages_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'content',
+                'Thin content pages found',
+                'important',
+                'Expand thin pages with useful, original information or consolidate pages that do not warrant separate URLs.',
+                "{$data['thin_content_pages_count']} crawled page(s) contain fewer than 300 visible words.",
+            );
+        }
+
+        if (($data['canonical_conflicts_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'indexability',
+                'Canonical conflicts found',
+                'important',
+                'Use consistent self-referencing canonicals unless a page intentionally consolidates into another canonical URL.',
+                "{$data['canonical_conflicts_count']} crawled page(s) have conflicting canonical signals.",
+            );
+        }
+
+        if (($data['sitemap_orphan_urls_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'indexability',
+                'Sitemap orphan URLs found',
+                'minor',
+                'Add relevant internal links to sitemap URLs that should be discoverable, or remove obsolete entries.',
+                "{$data['sitemap_orphan_urls_count']} sitemap URL(s) were not discovered by the internal crawl.",
             );
         }
 

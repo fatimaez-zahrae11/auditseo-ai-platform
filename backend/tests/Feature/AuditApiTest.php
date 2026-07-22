@@ -68,13 +68,19 @@ class AuditApiTest extends TestCase
         $this->responseDelayMicroseconds = 0;
         $this->redirects = [];
         $this->linkStatuses = [];
+        $aboutHtml = $this->contentHtml(
+            'About AuditSEO Platform Overview',
+            'A helpful about page with a sufficiently descriptive and unique meta description for crawler tests.',
+            '<h1>About AuditSEO Platform</h1><h2>Overview</h2><p>'.str_repeat('about content ', 300).'</p>',
+            '/about',
+        );
         $this->pageResponses = [
             'https://example.com/about' => [
-                'body' => $this->contentHtml(
-                    'About AuditSEO Platform Overview',
-                    'A helpful about page with a sufficiently descriptive and unique meta description for crawler tests.',
-                    '<h1>About AuditSEO Platform</h1><h2>Overview</h2><p>'.str_repeat('about content ', 300).'</p>',
-                ),
+                'body' => $aboutHtml,
+                'status' => 200,
+            ],
+            'http://example.com/about' => [
+                'body' => $aboutHtml,
                 'status' => 200,
             ],
         ];
@@ -978,9 +984,151 @@ class AuditApiTest extends TestCase
             ->assertJsonPath('raw_data.duplicate_titles_count', 1)
             ->assertJsonPath('raw_data.duplicate_meta_descriptions_count', 1)
             ->assertJsonPath('raw_data.duplicate_h1_count', 1)
+            ->assertJsonPath('raw_data.duplicate_title_groups.0.value', 'Shared Duplicate Page Title')
+            ->assertJsonPath('raw_data.duplicate_title_groups.0.count', 2)
+            ->assertJsonCount(2, 'raw_data.duplicate_title_groups.0.urls')
+            ->assertJsonPath(
+                'raw_data.duplicate_meta_description_groups.0.value',
+                'A shared duplicate meta description for internal crawler duplicate detection tests.',
+            )
+            ->assertJsonPath('raw_data.duplicate_meta_description_groups.0.count', 2)
+            ->assertJsonPath('raw_data.duplicate_h1_groups.0.value', 'Shared Duplicate H1')
+            ->assertJsonPath('raw_data.duplicate_h1_groups.0.count', 2)
             ->assertJsonFragment(['title' => 'Duplicate page titles found', 'category' => 'content', 'severity' => 'important'])
             ->assertJsonFragment(['title' => 'Duplicate meta descriptions found', 'category' => 'content', 'severity' => 'important'])
             ->assertJsonFragment(['title' => 'Duplicate H1 headings found', 'category' => 'content', 'severity' => 'minor']);
+    }
+
+    public function test_duplicate_content_groups_are_compact_and_create_an_issue(): void
+    {
+        $this->responseHtml = $this->htmlWithLinks(<<<'HTML'
+            <a href="/copy-one">Copy one</a>
+            <a href="/copy-two">Copy two</a>
+            HTML);
+        $sharedBody = '<h1>Shared Content Heading</h1><h2>Section</h2><p>'.str_repeat('shared substantive page content ', 150).'</p>';
+        $this->pageResponses['https://example.com/copy-one'] = [
+            'body' => $this->contentHtml(
+                'First Unique Page Title For Duplicate Content',
+                'A unique meta description for the first page in the duplicate content detection test.',
+                $sharedBody,
+                '/copy-one',
+            ),
+            'status' => 200,
+        ];
+        $this->pageResponses['https://example.com/copy-two'] = [
+            'body' => $this->contentHtml(
+                'Second Unique Page Title For Duplicate Content',
+                'A unique meta description for the second page in the duplicate content detection test.',
+                $sharedBody,
+                '/copy-two',
+            ),
+            'status' => 200,
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.duplicate_content_count', 1)
+            ->assertJsonPath('raw_data.duplicate_content_groups.0.count', 2)
+            ->assertJsonCount(2, 'raw_data.duplicate_content_groups.0.urls')
+            ->assertJsonFragment([
+                'title' => 'Duplicate page content found',
+                'category' => 'content',
+                'severity' => 'important',
+            ]);
+
+        $group = $response->json('raw_data.duplicate_content_groups.0');
+        $this->assertSame(16, strlen($group['fingerprint']));
+        $this->assertArrayNotHasKey('text', $group);
+        $this->assertArrayNotHasKey('visible_text_sample', $group);
+    }
+
+    public function test_thin_content_pages_are_counted_sampled_and_create_an_issue(): void
+    {
+        $this->responseHtml = $this->contentHtml(
+            'Site Quality Crawl Starting Page Title',
+            'A descriptive meta description for the healthy starting page in the thin content crawler test.',
+            '<h1>Site Quality Crawl</h1><h2>Section</h2><p>'.str_repeat('healthy main content ', 150).'</p><a href="/thin-only">Thin page</a>',
+        );
+        $this->pageResponses['https://example.com/thin-only'] = [
+            'body' => $this->contentHtml(
+                'Thin Internal Content Page Title',
+                'A descriptive meta description for the intentionally thin internal page in this test.',
+                '<h1>Thin Page</h1><h2>Section</h2><p>Only a few words.</p>',
+                '/thin-only',
+            ),
+            'status' => 200,
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.thin_content_pages_count', 1)
+            ->assertJsonPath('raw_data.thin_content_pages_sample.0.url', 'https://example.com/thin-only')
+            ->assertJsonPath('raw_data.thin_content_pages_sample.0.word_count', 7)
+            ->assertJsonFragment([
+                'title' => 'Thin content pages found',
+                'category' => 'content',
+                'severity' => 'important',
+            ]);
+    }
+
+    public function test_canonical_conflicts_are_detected_and_create_an_issue(): void
+    {
+        $this->responseHtml = $this->contentHtml(
+            'Canonical Conflict Crawl Starting Page',
+            'A descriptive meta description for a crawl that contains an internal canonical conflict.',
+            '<h1>Canonical Conflict Crawl</h1><h2>Section</h2><p>'.str_repeat('healthy main content ', 150).'</p><a href="/canonical-conflict">Conflict</a>',
+        );
+        $this->pageResponses['https://example.com/canonical-conflict'] = [
+            'body' => $this->contentHtml(
+                'Internal Page With Canonical Conflict',
+                'A descriptive meta description for an internal page whose canonical points externally.',
+                '<h1>Canonical Conflict</h1><h2>Section</h2><p>'.str_repeat('unique conflict content ', 150).'</p>',
+                'https://external.example.org/preferred',
+            ),
+            'status' => 200,
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.canonical_conflicts_count', 1)
+            ->assertJsonPath('raw_data.site_quality_warnings_count', 1)
+            ->assertJsonPath('raw_data.canonical_conflicts_sample.0.url', 'https://example.com/canonical-conflict')
+            ->assertJsonPath('raw_data.canonical_conflicts_sample.0.canonical_url', 'https://external.example.org/preferred')
+            ->assertJsonFragment([
+                'title' => 'Canonical conflicts found',
+                'category' => 'indexability',
+                'severity' => 'important',
+            ]);
+    }
+
+    public function test_sitemap_orphan_urls_are_counted_and_sampled(): void
+    {
+        $this->sitemapBody = <<<'XML'
+            <urlset>
+                <url><loc>https://example.com/page</loc></url>
+                <url><loc>https://example.com/orphan-page</loc></url>
+            </urlset>
+            XML;
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.sitemap_urls_sample', [
+                'https://example.com/page',
+                'https://example.com/orphan-page',
+            ])
+            ->assertJsonPath('raw_data.sitemap_orphan_urls_count', 1)
+            ->assertJsonPath('raw_data.sitemap_orphan_urls_sample', ['https://example.com/orphan-page'])
+            ->assertJsonFragment([
+                'title' => 'Sitemap orphan URLs found',
+                'category' => 'indexability',
+                'severity' => 'minor',
+            ]);
     }
 
     public function test_missing_title_creates_an_audit_issue(): void
@@ -1618,7 +1766,7 @@ class AuditApiTest extends TestCase
             HTML;
     }
 
-    private function contentHtml(string $title, string $description, string $body): string
+    private function contentHtml(string $title, string $description, string $body, string $canonical = '/page'): string
     {
         return <<<HTML
             <!doctype html>
@@ -1627,7 +1775,7 @@ class AuditApiTest extends TestCase
                     <title>{$title}</title>
                     <meta name="description" content="{$description}">
                     <meta name="viewport" content="width=device-width, initial-scale=1">
-                    <link rel="canonical" href="/page">
+                    <link rel="canonical" href="{$canonical}">
                 </head>
                 <body>{$body}</body>
             </html>

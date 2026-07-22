@@ -38,6 +38,10 @@ class SeoCrawlerService
 
     private const MAX_STRUCTURED_DATA_ERRORS_SAMPLE = 5;
 
+    private const MAX_SITE_QUALITY_SAMPLE = 5;
+
+    private const MIN_CONTENT_FINGERPRINT_WORDS = 100;
+
     private const IMPORTANT_SCHEMA_TYPES = [
         'Organization',
         'WebSite',
@@ -95,9 +99,20 @@ class SeoCrawlerService
         $data = [...$data, ...$sitemapData];
 
         $multiPageData = $this->crawlInternalPages($finalUrl, $data);
+        $siteQualityData = $this->analyzeSiteWideQuality(
+            $multiPageData['crawled_pages'],
+            $sitemapData['_sitemap_urls'],
+            $multiPageData['_discovered_internal_urls'],
+            $finalUrl,
+        );
         $linkCheckData = $this->checkLinks($data['checkable_links']);
-        unset($data['checkable_links']);
-        $data = [...$data, ...$linkCheckData, ...$multiPageData];
+        unset(
+            $data['checkable_links'],
+            $data['content_fingerprint'],
+            $data['_sitemap_urls'],
+            $multiPageData['_discovered_internal_urls'],
+        );
+        $data = [...$data, ...$linkCheckData, ...$multiPageData, ...$siteQualityData];
 
         return $data;
     }
@@ -320,6 +335,8 @@ class SeoCrawlerService
             'sitemap_checked_urls_count' => 0,
             'sitemap_broken_urls_count' => 0,
             'sitemap_broken_urls_sample' => [],
+            'sitemap_urls_sample' => [],
+            '_sitemap_urls' => [],
         ];
         $sitemapUrl = $robotsSitemapUrls[0] ?? $fallbackUrl;
 
@@ -373,6 +390,8 @@ class SeoCrawlerService
         }
 
         $sitemapUrls = array_values($sitemapUrls);
+        $data['_sitemap_urls'] = $sitemapUrls;
+        $data['sitemap_urls_sample'] = array_slice($sitemapUrls, 0, self::MAX_SITE_QUALITY_SAMPLE);
         $data['sitemap_urls_count'] = count($sitemapUrls);
         $auditedUrlKey = $this->normalizeUrl($auditedUrl);
         $data['sitemap_contains_audited_url'] = in_array($auditedUrlKey, array_map(
@@ -549,6 +568,7 @@ class SeoCrawlerService
             'crawl_max_depth' => $maxDepth,
             'crawled_pages_count' => count($crawledPages),
             'discovered_internal_urls_count' => count($discovered),
+            '_discovered_internal_urls' => array_values($discovered),
             'crawled_pages' => $crawledPages,
             ...$this->summarizeCrawledPages($crawledPages),
         ];
@@ -584,7 +604,7 @@ class SeoCrawlerService
 
     /**
      * @param  array<string, mixed>  $data
-     * @return array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool, response_time_ms: int, page_size_bytes: int, structured_data_found: bool, schema_types: array<int, string>}
+     * @return array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool, response_time_ms: int, page_size_bytes: int, structured_data_found: bool, schema_types: array<int, string>, canonical_url: ?string, content_fingerprint: ?string}
      */
     private function compactCrawledPage(string $url, int $statusCode, int $depth, array $data): array
     {
@@ -601,11 +621,13 @@ class SeoCrawlerService
             'page_size_bytes' => max(0, (int) ($data['page_size_bytes'] ?? 0)),
             'structured_data_found' => (bool) ($data['structured_data_found'] ?? false),
             'schema_types' => array_values($data['schema_types'] ?? []),
+            'canonical_url' => $data['canonical_url'] ?? null,
+            'content_fingerprint' => $data['content_fingerprint'] ?? null,
         ];
     }
 
     /**
-     * @param  array<int, array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool, response_time_ms: int, page_size_bytes: int, structured_data_found: bool, schema_types: array<int, string>}>  $pages
+     * @param  array<int, array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool, response_time_ms: int, page_size_bytes: int, structured_data_found: bool, schema_types: array<int, string>, canonical_url: ?string, content_fingerprint: ?string}>  $pages
      * @return array<string, int>
      */
     private function summarizeCrawledPages(array $pages): array
@@ -694,6 +716,213 @@ class SeoCrawlerService
         }
 
         return $duplicates;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $pages
+     * @param  array<int, string>  $sitemapUrls
+     * @param  array<int, string>  $discoveredUrls
+     * @return array<string, mixed>
+     */
+    private function analyzeSiteWideQuality(
+        array $pages,
+        array $sitemapUrls,
+        array $discoveredUrls,
+        string $auditedUrl,
+    ): array {
+        $titleGroups = $this->duplicateTextGroups($pages, 'title');
+        $metaDescriptionGroups = $this->duplicateTextGroups($pages, 'meta_description');
+        $h1Groups = $this->duplicateTextGroups($pages, 'h1');
+        $contentGroups = $this->duplicateFingerprintGroups($pages);
+        $duplicateContentCount = $this->duplicateOccurrencesCount($contentGroups);
+        $thinPages = [];
+
+        foreach ($pages as $page) {
+            if (($page['status_code'] ?? 0) === 200 && ($page['word_count'] ?? 0) < 300) {
+                $thinPages[] = [
+                    'url' => $page['url'],
+                    'word_count' => (int) $page['word_count'],
+                ];
+            }
+        }
+
+        $canonicalConflicts = $this->canonicalConflicts($pages);
+        $orphanUrls = $this->sitemapOrphanUrls($sitemapUrls, $discoveredUrls, $pages, $auditedUrl);
+        $warningsCount = 0;
+
+        foreach ([
+            $titleGroups,
+            $metaDescriptionGroups,
+            $h1Groups,
+            $contentGroups,
+            $thinPages,
+            $canonicalConflicts,
+            $orphanUrls,
+        ] as $warnings) {
+            if ($warnings !== []) {
+                $warningsCount++;
+            }
+        }
+
+        return [
+            'duplicate_title_groups' => $titleGroups,
+            'duplicate_meta_description_groups' => $metaDescriptionGroups,
+            'duplicate_h1_groups' => $h1Groups,
+            'duplicate_content_groups' => $contentGroups,
+            'duplicate_content_count' => $duplicateContentCount,
+            'thin_content_pages_count' => count($thinPages),
+            'thin_content_pages_sample' => array_slice($thinPages, 0, self::MAX_SITE_QUALITY_SAMPLE),
+            'canonical_conflicts_count' => count($canonicalConflicts),
+            'canonical_conflicts_sample' => array_slice($canonicalConflicts, 0, self::MAX_SITE_QUALITY_SAMPLE),
+            'sitemap_orphan_urls_count' => count($orphanUrls),
+            'sitemap_orphan_urls_sample' => array_slice($orphanUrls, 0, self::MAX_SITE_QUALITY_SAMPLE),
+            'site_quality_warnings_count' => $warningsCount,
+        ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $pages
+     * @return array<int, array{value: string, urls: array<int, string>, count: int}>
+     */
+    private function duplicateTextGroups(array $pages, string $field): array
+    {
+        $groups = [];
+
+        foreach ($pages as $page) {
+            if (($page['status_code'] ?? 0) !== 200) {
+                continue;
+            }
+
+            $value = $this->normalizeWhitespace((string) ($page[$field] ?? ''));
+            if ($value === '') {
+                continue;
+            }
+
+            $key = mb_strtolower($value);
+            $groups[$key] ??= ['value' => $value, 'urls' => [], 'count' => 0];
+            $groups[$key]['count']++;
+            if (count($groups[$key]['urls']) < self::MAX_SITE_QUALITY_SAMPLE) {
+                $groups[$key]['urls'][] = $page['url'];
+            }
+        }
+
+        return array_values(array_filter(
+            $groups,
+            fn (array $group): bool => $group['count'] > 1,
+        ));
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $pages
+     * @return array<int, array{fingerprint: string, urls: array<int, string>, count: int}>
+     */
+    private function duplicateFingerprintGroups(array $pages): array
+    {
+        $groups = [];
+
+        foreach ($pages as $page) {
+            $fingerprint = (string) ($page['content_fingerprint'] ?? '');
+            if (($page['status_code'] ?? 0) !== 200 || $fingerprint === '') {
+                continue;
+            }
+
+            $groups[$fingerprint] ??= ['fingerprint' => $fingerprint, 'urls' => [], 'count' => 0];
+            $groups[$fingerprint]['count']++;
+            if (count($groups[$fingerprint]['urls']) < self::MAX_SITE_QUALITY_SAMPLE) {
+                $groups[$fingerprint]['urls'][] = $page['url'];
+            }
+        }
+
+        return array_values(array_filter(
+            $groups,
+            fn (array $group): bool => $group['count'] > 1,
+        ));
+    }
+
+    /**
+     * @param  array<int, array{count: int}>  $groups
+     */
+    private function duplicateOccurrencesCount(array $groups): int
+    {
+        return array_sum(array_map(
+            fn (array $group): int => max(0, $group['count'] - 1),
+            $groups,
+        ));
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $pages
+     * @return array<int, array{url: string, canonical_url: string}>
+     */
+    private function canonicalConflicts(array $pages): array
+    {
+        $conflicts = [];
+        $canonicalGroups = [];
+
+        foreach ($pages as $page) {
+            $canonicalUrl = $page['canonical_url'] ?? null;
+            if (($page['status_code'] ?? 0) !== 200 || ! is_string($canonicalUrl) || $canonicalUrl === '') {
+                continue;
+            }
+
+            $pageKey = $this->normalizeUrl($page['url']);
+            $canonicalKey = $this->normalizeUrl($canonicalUrl);
+            $canonicalGroups[$canonicalKey][] = $page;
+
+            if ($pageKey !== $canonicalKey) {
+                $conflicts[$pageKey] = [
+                    'url' => $page['url'],
+                    'canonical_url' => $canonicalUrl,
+                ];
+            }
+        }
+
+        foreach ($canonicalGroups as $group) {
+            if (count($group) < 2) {
+                continue;
+            }
+
+            foreach ($group as $page) {
+                $pageKey = $this->normalizeUrl($page['url']);
+                $conflicts[$pageKey] ??= [
+                    'url' => $page['url'],
+                    'canonical_url' => $page['canonical_url'],
+                ];
+            }
+        }
+
+        return array_values($conflicts);
+    }
+
+    /**
+     * @param  array<int, string>  $sitemapUrls
+     * @param  array<int, string>  $discoveredUrls
+     * @param  array<int, array<string, mixed>>  $pages
+     * @return array<int, string>
+     */
+    private function sitemapOrphanUrls(
+        array $sitemapUrls,
+        array $discoveredUrls,
+        array $pages,
+        string $auditedUrl,
+    ): array {
+        $knownUrls = [$this->normalizeUrl($auditedUrl) => true];
+        foreach ([...$discoveredUrls, ...array_column($pages, 'url')] as $url) {
+            $knownUrls[$this->normalizeUrl($url)] = true;
+        }
+
+        $host = strtolower((string) parse_url($auditedUrl, PHP_URL_HOST));
+        $orphans = [];
+        foreach ($sitemapUrls as $url) {
+            if (strtolower((string) parse_url($url, PHP_URL_HOST)) !== $host
+                || isset($knownUrls[$this->normalizeUrl($url)])) {
+                continue;
+            }
+
+            $orphans[$this->normalizeUrl($url)] = $url;
+        }
+
+        return array_values($orphans);
     }
 
     /**
@@ -829,6 +1058,7 @@ class SeoCrawlerService
             'meta_description' => $description !== '' ? $description : null,
             'meta_description_length' => mb_strlen($description),
             'word_count' => $wordCount,
+            'content_fingerprint' => $this->contentFingerprint($visibleText, $wordCount),
             'visible_text_sample' => mb_substr($visibleText, 0, self::VISIBLE_TEXT_SAMPLE_LENGTH),
             'canonical_url' => $canonicalUrl,
             'canonical_matches_final_url' => $canonicalUrl !== null
@@ -1095,6 +1325,17 @@ class SeoCrawlerService
     private function countWords(string $text): int
     {
         return (int) preg_match_all("/[\\p{L}\\p{N}]+(?:['’\x{2010}-\x{2015}][\\p{L}\\p{N}]+)*/u", $text);
+    }
+
+    private function contentFingerprint(string $visibleText, int $wordCount): ?string
+    {
+        if ($wordCount < self::MIN_CONTENT_FINGERPRINT_WORDS) {
+            return null;
+        }
+
+        $normalized = $this->normalizeComparableText($visibleText);
+
+        return $normalized !== '' ? substr(hash('sha256', $normalized), 0, 16) : null;
     }
 
     /**

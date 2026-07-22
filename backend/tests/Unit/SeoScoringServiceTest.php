@@ -155,6 +155,28 @@ class SeoScoringServiceTest extends TestCase
         }
     }
 
+    public function test_site_wide_quality_problems_reduce_and_clamp_scores(): void
+    {
+        $service = new SeoScoringService;
+        $healthyScores = $service->calculate($this->completeData());
+        $weakScores = $service->calculate([
+            ...$this->completeData(),
+            'duplicate_title_groups' => [['count' => 3]],
+            'duplicate_meta_description_groups' => [['count' => 3]],
+            'duplicate_h1_groups' => [['count' => 3]],
+            'duplicate_content_count' => 3,
+            'thin_content_pages_count' => 3,
+            'canonical_conflicts_count' => 3,
+        ]);
+
+        $this->assertLessThan($healthyScores['content_score'], $weakScores['content_score']);
+        $this->assertLessThan($healthyScores['technical_score'], $weakScores['technical_score']);
+        foreach ($weakScores as $score) {
+            $this->assertGreaterThanOrEqual(0, $score);
+            $this->assertLessThanOrEqual(100, $score);
+        }
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -191,6 +213,12 @@ class SeoScoringServiceTest extends TestCase
             'duplicate_titles_count' => 0,
             'duplicate_meta_descriptions_count' => 0,
             'duplicate_h1_count' => 0,
+            'duplicate_title_groups' => [],
+            'duplicate_meta_description_groups' => [],
+            'duplicate_h1_groups' => [],
+            'duplicate_content_count' => 0,
+            'thin_content_pages_count' => 0,
+            'canonical_conflicts_count' => 0,
             'http_status_code' => 200,
             'redirect_count' => 0,
             'canonical_url' => 'https://example.com/page',

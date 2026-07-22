@@ -64,9 +64,32 @@ class SeoScoringService
         $contentScore -= min(20, ((int) ($data['pages_with_missing_meta_description_count'] ?? 0)) * 8);
         $contentScore -= min(20, ((int) ($data['pages_with_missing_h1_count'] ?? 0)) * 10);
         $contentScore -= min(15, ((int) ($data['pages_with_low_word_count_count'] ?? 0)) * 5);
-        $contentScore -= min(20, ((int) ($data['duplicate_titles_count'] ?? 0)) * 10);
-        $contentScore -= min(20, ((int) ($data['duplicate_meta_descriptions_count'] ?? 0)) * 8);
-        $contentScore -= min(10, ((int) ($data['duplicate_h1_count'] ?? 0)) * 5);
+        $duplicateTitles = max(
+            (int) ($data['duplicate_titles_count'] ?? 0),
+            $this->groupDuplicateOccurrences($data['duplicate_title_groups'] ?? []),
+        );
+        $duplicateMetaDescriptions = max(
+            (int) ($data['duplicate_meta_descriptions_count'] ?? 0),
+            $this->groupDuplicateOccurrences($data['duplicate_meta_description_groups'] ?? []),
+        );
+        $duplicateH1s = max(
+            (int) ($data['duplicate_h1_count'] ?? 0),
+            $this->groupDuplicateOccurrences($data['duplicate_h1_groups'] ?? []),
+        );
+        $contentScore -= min(20, $duplicateTitles * 10);
+        $contentScore -= min(20, $duplicateMetaDescriptions * 8);
+        $contentScore -= min(10, $duplicateH1s * 5);
+        $contentScore -= min(25, ((int) ($data['duplicate_content_count'] ?? 0)) * 10);
+
+        $representedThinPages = (int) ($data['pages_with_low_word_count_count'] ?? 0);
+        if (array_key_exists('word_count', $data) && $data['word_count'] < 300) {
+            $representedThinPages++;
+        }
+        $additionalThinPages = max(
+            0,
+            (int) ($data['thin_content_pages_count'] ?? 0) - $representedThinPages,
+        );
+        $contentScore -= min(20, $additionalThinPages * 5);
 
         if (! $data['uses_https']) {
             $technicalScore -= 40;
@@ -95,6 +118,7 @@ class SeoScoringService
         $technicalScore -= min(30, ((int) ($data['sitemap_broken_urls_count'] ?? 0)) * 10);
         $technicalScore -= min(30, ((int) ($data['pages_with_http_errors_count'] ?? 0)) * 10);
         $technicalScore -= min(30, ((int) ($data['pages_with_noindex_count'] ?? 0)) * 10);
+        $technicalScore -= min(30, ((int) ($data['canonical_conflicts_count'] ?? 0)) * 10);
 
         if (($data['http_status_code'] ?? 200) !== 200) {
             $technicalScore -= 50;
@@ -186,6 +210,17 @@ class SeoScoringService
     private function clamp(int $score): int
     {
         return max(0, min(100, $score));
+    }
+
+    /**
+     * @param  array<int, array{count?: int}>  $groups
+     */
+    private function groupDuplicateOccurrences(array $groups): int
+    {
+        return array_sum(array_map(
+            fn (array $group): int => max(0, ((int) ($group['count'] ?? 0)) - 1),
+            $groups,
+        ));
     }
 
     /**
