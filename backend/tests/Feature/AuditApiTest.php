@@ -23,6 +23,10 @@ class AuditApiTest extends TestCase
 
     private int $pageStatus;
 
+    private string $robotsBody;
+
+    private string $sitemapBody;
+
     /**
      * @var array<string, int>
      */
@@ -41,6 +45,8 @@ class AuditApiTest extends TestCase
         $this->robotsStatus = 200;
         $this->sitemapStatus = 200;
         $this->pageStatus = 200;
+        $this->robotsBody = 'User-agent: *';
+        $this->sitemapBody = '<urlset></urlset>';
         $this->redirects = [];
         $this->linkStatuses = [];
 
@@ -52,11 +58,11 @@ class AuditApiTest extends TestCase
             }
 
             if (str_ends_with($request->url(), '/robots.txt')) {
-                return Http::response('User-agent: *', $this->robotsStatus);
+                return Http::response($this->robotsBody, $this->robotsStatus);
             }
 
             if (str_ends_with($request->url(), '/sitemap.xml')) {
-                return Http::response('<urlset></urlset>', $this->sitemapStatus);
+                return Http::response($this->sitemapBody, $this->sitemapStatus);
             }
 
             if (isset($this->linkStatuses[$request->url()])) {
@@ -122,13 +128,189 @@ class AuditApiTest extends TestCase
         $response
             ->assertCreated()
             ->assertJsonPath('raw_data.robots_txt_found', true)
-            ->assertJsonPath('raw_data.sitemap_xml_found', true);
+            ->assertJsonPath('raw_data.robots_txt_status_code', 200)
+            ->assertJsonPath('raw_data.sitemap_xml_found', true)
+            ->assertJsonPath('raw_data.sitemap_xml_status_code', 200);
 
         $audit = Audit::findOrFail($response->json('audit.id'));
         $this->assertTrue($audit->raw_data['robots_txt_found']);
         $this->assertTrue($audit->raw_data['sitemap_xml_found']);
         Http::assertSent(fn (Request $request) => $request->url() === 'https://example.com/robots.txt');
         Http::assertSent(fn (Request $request) => $request->url() === 'https://example.com/sitemap.xml');
+    }
+
+    public function test_robots_txt_directives_and_disallow_rules_are_analyzed(): void
+    {
+        $this->robotsBody = <<<'ROBOTS'
+            User-agent: *
+            Disallow: /private
+            Disallow: /temporary
+            Allow: /private/allowed
+            Sitemap: https://example.com/sitemap.xml
+
+            User-agent: ExampleBot
+            Disallow: /bot-only
+            ROBOTS;
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/private/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.robots_txt_status_code', 200)
+            ->assertJsonPath('raw_data.robots_txt_sitemap_urls.0', 'https://example.com/sitemap.xml')
+            ->assertJsonPath('raw_data.robots_txt_disallow_rules_count', 2)
+            ->assertJsonPath('raw_data.robots_txt_allows_audited_url', false)
+            ->assertJsonFragment([
+                'title' => 'Audited URL is blocked by robots.txt',
+                'category' => 'indexability',
+                'severity' => 'critical',
+            ]);
+    }
+
+    public function test_a_more_specific_robots_allow_rule_keeps_the_url_crawlable(): void
+    {
+        $this->robotsBody = <<<'ROBOTS'
+            User-agent: *
+            Disallow: /private
+            Allow: /private/allowed
+            ROBOTS;
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/private/allowed/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.robots_txt_allows_audited_url', true)
+            ->assertJsonMissing(['title' => 'Audited URL is blocked by robots.txt']);
+    }
+
+    public function test_valid_sitemap_metrics_and_audited_url_presence_are_stored(): void
+    {
+        $this->sitemapBody = <<<'XML'
+            <?xml version="1.0" encoding="UTF-8"?>
+            <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                <url><loc>https://example.com/page</loc></url>
+                <url><loc>https://example.com/another-page</loc></url>
+            </urlset>
+            XML;
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.sitemap_xml_status_code', 200)
+            ->assertJsonPath('raw_data.sitemap_xml_is_valid', true)
+            ->assertJsonPath('raw_data.sitemap_urls_count', 2)
+            ->assertJsonPath('raw_data.sitemap_contains_audited_url', true)
+            ->assertJsonPath('raw_data.sitemap_https_urls_count', 2)
+            ->assertJsonPath('raw_data.sitemap_non_https_urls_count', 0)
+            ->assertJsonPath('raw_data.sitemap_checked_urls_count', 2)
+            ->assertJsonPath('raw_data.sitemap_broken_urls_count', 0)
+            ->assertJsonPath('raw_data.sitemap_broken_urls_sample', []);
+    }
+
+    public function test_invalid_sitemap_creates_an_important_technical_issue(): void
+    {
+        $this->sitemapBody = '<urlset><url><loc>https://example.com/page</loc></urlset>';
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.sitemap_xml_found', true)
+            ->assertJsonPath('raw_data.sitemap_xml_is_valid', false)
+            ->assertJsonPath('audit.technical_score', 80)
+            ->assertJsonFragment([
+                'title' => 'Sitemap XML is invalid',
+                'category' => 'technical',
+                'severity' => 'important',
+            ]);
+    }
+
+    public function test_audited_url_missing_from_valid_sitemap_creates_a_minor_issue(): void
+    {
+        $this->sitemapBody = <<<'XML'
+            <urlset>
+                <url><loc>https://example.com/a-different-page</loc></url>
+            </urlset>
+            XML;
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.sitemap_contains_audited_url', false)
+            ->assertJsonFragment([
+                'title' => 'Audited URL is missing from sitemap',
+                'category' => 'indexability',
+                'severity' => 'minor',
+            ]);
+    }
+
+    public function test_sitemap_non_https_urls_create_an_important_technical_issue(): void
+    {
+        $this->sitemapBody = <<<'XML'
+            <urlset>
+                <url><loc>https://example.com/page</loc></url>
+                <url><loc>http://example.com/legacy</loc></url>
+            </urlset>
+            XML;
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.sitemap_https_urls_count', 1)
+            ->assertJsonPath('raw_data.sitemap_non_https_urls_count', 1)
+            ->assertJsonFragment([
+                'title' => 'Sitemap contains non-HTTPS URLs',
+                'category' => 'technical',
+                'severity' => 'important',
+            ]);
+    }
+
+    public function test_broken_sitemap_urls_create_an_important_technical_issue(): void
+    {
+        $this->sitemapBody = <<<'XML'
+            <urlset>
+                <url><loc>https://example.com/page</loc></url>
+                <url><loc>https://example.com/broken-sitemap-entry</loc></url>
+            </urlset>
+            XML;
+        $this->linkStatuses['https://example.com/broken-sitemap-entry'] = 410;
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.sitemap_checked_urls_count', 2)
+            ->assertJsonPath('raw_data.sitemap_broken_urls_count', 1)
+            ->assertJsonPath(
+                'raw_data.sitemap_broken_urls_sample.0',
+                'https://example.com/broken-sitemap-entry',
+            )
+            ->assertJsonFragment([
+                'title' => 'Sitemap contains broken URLs',
+                'category' => 'technical',
+                'severity' => 'important',
+            ]);
+    }
+
+    public function test_parsed_and_checked_sitemap_urls_are_safely_limited(): void
+    {
+        $locations = '';
+        for ($index = 1; $index <= 130; $index++) {
+            $locations .= "<url><loc>https://example.com/sitemap-page-{$index}</loc></url>";
+        }
+        $this->sitemapBody = "<urlset>{$locations}</urlset>";
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.sitemap_urls_count', 100)
+            ->assertJsonPath('raw_data.sitemap_checked_urls_count', 25);
     }
 
     public function test_missing_robots_txt_creates_an_audit_issue(): void
@@ -141,6 +323,7 @@ class AuditApiTest extends TestCase
         $response
             ->assertCreated()
             ->assertJsonPath('raw_data.robots_txt_found', false)
+            ->assertJsonPath('raw_data.robots_txt_status_code', 404)
             ->assertJsonPath('audit.technical_score', 80)
             ->assertJsonFragment(['title' => 'Missing robots.txt']);
         $this->assertDatabaseHas('audit_issues', ['title' => 'Missing robots.txt']);
@@ -156,6 +339,7 @@ class AuditApiTest extends TestCase
         $response
             ->assertCreated()
             ->assertJsonPath('raw_data.sitemap_xml_found', false)
+            ->assertJsonPath('raw_data.sitemap_xml_status_code', 404)
             ->assertJsonPath('audit.technical_score', 80)
             ->assertJsonFragment(['title' => 'Missing sitemap.xml']);
         $this->assertDatabaseHas('audit_issues', ['title' => 'Missing sitemap.xml']);

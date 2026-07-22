@@ -68,6 +68,25 @@ class SeoScoringServiceTest extends TestCase
         }
     }
 
+    public function test_sitemap_and_robots_problems_reduce_and_clamp_the_technical_score(): void
+    {
+        $service = new SeoScoringService;
+
+        $scores = $service->calculate([
+            ...$this->completeData(),
+            'robots_txt_allows_audited_url' => false,
+            'sitemap_xml_is_valid' => false,
+            'sitemap_non_https_urls_count' => 5,
+            'sitemap_broken_urls_count' => 5,
+        ]);
+
+        $this->assertSame(0, $scores['technical_score']);
+        foreach ($scores as $score) {
+            $this->assertGreaterThanOrEqual(0, $score);
+            $this->assertLessThanOrEqual(100, $score);
+        }
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -91,6 +110,10 @@ class SeoScoringServiceTest extends TestCase
             'uses_https' => true,
             'robots_txt_found' => true,
             'sitemap_xml_found' => true,
+            'robots_txt_allows_audited_url' => true,
+            'sitemap_xml_is_valid' => true,
+            'sitemap_non_https_urls_count' => 0,
+            'sitemap_broken_urls_count' => 0,
             'http_status_code' => 200,
             'redirect_count' => 0,
             'canonical_url' => 'https://example.com/page',

@@ -215,6 +215,53 @@ class AuditController extends Controller
             );
         }
 
+        if (! ($data['robots_txt_allows_audited_url'] ?? true)) {
+            $issues[] = $this->issue(
+                'indexability',
+                'Audited URL is blocked by robots.txt',
+                'critical',
+                'Update the User-agent: * rules if this URL should be available to search engines.',
+            );
+        }
+
+        if (($data['sitemap_xml_found'] ?? false) && ! ($data['sitemap_xml_is_valid'] ?? false)) {
+            $issues[] = $this->issue(
+                'technical',
+                'Sitemap XML is invalid',
+                'important',
+                'Fix the sitemap XML structure so search engines can parse it.',
+            );
+        }
+
+        if (($data['sitemap_xml_is_valid'] ?? false) && ! ($data['sitemap_contains_audited_url'] ?? false)) {
+            $issues[] = $this->issue(
+                'indexability',
+                'Audited URL is missing from sitemap',
+                'minor',
+                'Add the canonical audited URL to the XML sitemap if it should be indexed.',
+            );
+        }
+
+        if (($data['sitemap_non_https_urls_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'technical',
+                'Sitemap contains non-HTTPS URLs',
+                'important',
+                'Replace non-HTTPS sitemap entries with their canonical HTTPS URLs.',
+                "{$data['sitemap_non_https_urls_count']} sitemap URL(s) do not use HTTPS.",
+            );
+        }
+
+        if (($data['sitemap_broken_urls_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'technical',
+                'Sitemap contains broken URLs',
+                'important',
+                'Remove or correct sitemap URLs that return HTTP errors.',
+                "{$data['sitemap_broken_urls_count']} checked sitemap URL(s) are broken.",
+            );
+        }
+
         if ($data['http_status_code'] !== 200) {
             $issues[] = $this->issue(
                 'technical',

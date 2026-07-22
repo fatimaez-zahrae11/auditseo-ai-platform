@@ -21,6 +21,12 @@ class SeoCrawlerService
 
     private const VISIBLE_TEXT_SAMPLE_LENGTH = 500;
 
+    private const MAX_SITEMAP_URLS = 100;
+
+    private const MAX_CHECKED_SITEMAP_URLS = 25;
+
+    private const MAX_CHILD_SITEMAPS = 10;
+
     private const GENERIC_ANCHOR_TEXTS = [
         'click here',
         'here',
@@ -53,8 +59,15 @@ class SeoCrawlerService
         $data['is_indexable'] = $data['http_status_code'] === 200 && $data['is_indexable'];
 
         $origin = $this->origin($finalUrl);
-        $data['robots_txt_found'] = $this->resourceExists("{$origin}/robots.txt");
-        $data['sitemap_xml_found'] = $this->resourceExists("{$origin}/sitemap.xml");
+        $robotsData = $this->analyzeRobotsTxt("{$origin}/robots.txt", $finalUrl);
+        $data = [...$data, ...$robotsData];
+
+        $sitemapData = $this->analyzeSitemap(
+            $robotsData['robots_txt_sitemap_urls'],
+            "{$origin}/sitemap.xml",
+            $finalUrl,
+        );
+        $data = [...$data, ...$sitemapData];
 
         $linkCheckData = $this->checkLinks($data['checkable_links']);
         unset($data['checkable_links']);
@@ -125,12 +138,370 @@ class SeoCrawlerService
         return "{$scheme}://{$host}{$port}";
     }
 
-    private function resourceExists(string $url): bool
+    /**
+     * @return array{robots_txt_found: bool, robots_txt_status_code: ?int, robots_txt_allows_audited_url: bool, robots_txt_sitemap_urls: array<int, string>, robots_txt_disallow_rules_count: int}
+     */
+    private function analyzeRobotsTxt(string $robotsUrl, string $auditedUrl): array
     {
+        $data = [
+            'robots_txt_found' => false,
+            'robots_txt_status_code' => null,
+            'robots_txt_allows_audited_url' => true,
+            'robots_txt_sitemap_urls' => [],
+            'robots_txt_disallow_rules_count' => 0,
+        ];
+
         try {
-            return $this->httpClient()->get($url)->successful();
-        } catch (ConnectionException) {
-            return false;
+            [$response, $finalRobotsUrl] = $this->fetchResource($robotsUrl);
+        } catch (ConnectionException|RuntimeException|ValidationException) {
+            return $data;
+        }
+
+        $data['robots_txt_status_code'] = $response->status();
+        $data['robots_txt_found'] = $response->successful();
+        if (! $data['robots_txt_found']) {
+            return $data;
+        }
+
+        $parsed = $this->parseRobotsTxt($response->body(), $finalRobotsUrl);
+        $data['robots_txt_sitemap_urls'] = $parsed['sitemap_urls'];
+        $data['robots_txt_disallow_rules_count'] = count($parsed['disallow_rules']);
+
+        $path = (string) (parse_url($auditedUrl, PHP_URL_PATH) ?: '/');
+        $query = (string) parse_url($auditedUrl, PHP_URL_QUERY);
+        if ($query !== '') {
+            $path .= "?{$query}";
+        }
+        $data['robots_txt_allows_audited_url'] = $this->robotsRulesAllowPath($path, $parsed['rules']);
+
+        return $data;
+    }
+
+    /**
+     * @return array{sitemap_urls: array<int, string>, disallow_rules: array<int, string>, rules: array<int, array{type: string, path: string}>}
+     */
+    private function parseRobotsTxt(string $contents, string $robotsUrl): array
+    {
+        $sitemapUrls = [];
+        $disallowRules = [];
+        $rules = [];
+        $currentAgents = [];
+        $rulesStarted = false;
+
+        foreach (preg_split('/\R/', $contents) ?: [] as $line) {
+            $line = trim((string) preg_replace('/\s*#.*$/', '', $line));
+            if ($line === '' || ! str_contains($line, ':')) {
+                continue;
+            }
+
+            [$directive, $value] = array_map('trim', explode(':', $line, 2));
+            $directive = strtolower($directive);
+
+            if ($directive === 'sitemap') {
+                $sitemapUrl = $this->resolveCheckableHttpUrl($robotsUrl, $value);
+                if ($sitemapUrl !== null) {
+                    $sitemapUrls[$this->normalizeUrl($sitemapUrl)] = $sitemapUrl;
+                }
+
+                continue;
+            }
+
+            if ($directive === 'user-agent') {
+                if ($rulesStarted) {
+                    $currentAgents = [];
+                    $rulesStarted = false;
+                }
+
+                $currentAgents[] = strtolower($value);
+
+                continue;
+            }
+
+            if ($currentAgents === []) {
+                continue;
+            }
+
+            $rulesStarted = true;
+            if (! in_array('*', $currentAgents, true)
+                || ! in_array($directive, ['allow', 'disallow'], true)
+                || $value === '') {
+                continue;
+            }
+
+            $rules[] = ['type' => $directive, 'path' => $value];
+            if ($directive === 'disallow') {
+                $disallowRules[] = $value;
+            }
+        }
+
+        return [
+            'sitemap_urls' => array_values($sitemapUrls),
+            'disallow_rules' => $disallowRules,
+            'rules' => $rules,
+        ];
+    }
+
+    /**
+     * @param  array<int, array{type: string, path: string}>  $rules
+     */
+    private function robotsRulesAllowPath(string $path, array $rules): bool
+    {
+        $matchedRule = null;
+        $matchedLength = -1;
+
+        foreach ($rules as $rule) {
+            if (! $this->robotsRuleMatches($path, $rule['path'])) {
+                continue;
+            }
+
+            $ruleLength = mb_strlen(str_replace('*', '', rtrim($rule['path'], '$')));
+            if ($ruleLength > $matchedLength
+                || ($ruleLength === $matchedLength && $rule['type'] === 'allow')) {
+                $matchedRule = $rule;
+                $matchedLength = $ruleLength;
+            }
+        }
+
+        return $matchedRule === null || $matchedRule['type'] === 'allow';
+    }
+
+    private function robotsRuleMatches(string $path, string $rule): bool
+    {
+        $endsAtPathEnd = str_ends_with($rule, '$');
+        if ($endsAtPathEnd) {
+            $rule = substr($rule, 0, -1);
+        }
+
+        $pattern = str_replace('\\*', '.*', preg_quote($rule, '#'));
+
+        return preg_match('#^'.$pattern.($endsAtPathEnd ? '$' : '').'#u', $path) === 1;
+    }
+
+    /**
+     * @param  array<int, string>  $robotsSitemapUrls
+     * @return array<string, mixed>
+     */
+    private function analyzeSitemap(array $robotsSitemapUrls, string $fallbackUrl, string $auditedUrl): array
+    {
+        $data = [
+            'sitemap_xml_found' => false,
+            'sitemap_xml_status_code' => null,
+            'sitemap_xml_is_valid' => false,
+            'sitemap_urls_count' => 0,
+            'sitemap_contains_audited_url' => false,
+            'sitemap_https_urls_count' => 0,
+            'sitemap_non_https_urls_count' => 0,
+            'sitemap_checked_urls_count' => 0,
+            'sitemap_broken_urls_count' => 0,
+            'sitemap_broken_urls_sample' => [],
+        ];
+        $sitemapUrl = $robotsSitemapUrls[0] ?? $fallbackUrl;
+
+        try {
+            [$response, $finalSitemapUrl] = $this->fetchResource($sitemapUrl);
+        } catch (ConnectionException|RuntimeException|ValidationException) {
+            return $data;
+        }
+
+        $data['sitemap_xml_status_code'] = $response->status();
+        $data['sitemap_xml_found'] = $response->successful();
+        if (! $data['sitemap_xml_found']) {
+            return $data;
+        }
+
+        $parsed = $this->parseSitemapXml($response->body());
+        if ($parsed === null) {
+            return $data;
+        }
+
+        $data['sitemap_xml_is_valid'] = true;
+        $sitemapUrls = [];
+        if ($parsed['type'] === 'urlset') {
+            $this->addSitemapLocations($sitemapUrls, $parsed['locations'], $finalSitemapUrl);
+        } else {
+            foreach (array_slice($parsed['locations'], 0, self::MAX_CHILD_SITEMAPS) as $childLocation) {
+                if (count($sitemapUrls) >= self::MAX_SITEMAP_URLS) {
+                    break;
+                }
+
+                $childUrl = $this->resolveCheckableHttpUrl($finalSitemapUrl, $childLocation);
+                if ($childUrl === null) {
+                    continue;
+                }
+
+                try {
+                    [$childResponse, $finalChildUrl] = $this->fetchResource($childUrl);
+                } catch (ConnectionException|RuntimeException|ValidationException) {
+                    continue;
+                }
+
+                if (! $childResponse->successful()) {
+                    continue;
+                }
+
+                $childSitemap = $this->parseSitemapXml($childResponse->body());
+                if ($childSitemap !== null && $childSitemap['type'] === 'urlset') {
+                    $this->addSitemapLocations($sitemapUrls, $childSitemap['locations'], $finalChildUrl);
+                }
+            }
+        }
+
+        $sitemapUrls = array_values($sitemapUrls);
+        $data['sitemap_urls_count'] = count($sitemapUrls);
+        $auditedUrlKey = $this->normalizeUrl($auditedUrl);
+        $data['sitemap_contains_audited_url'] = in_array($auditedUrlKey, array_map(
+            fn (string $url): string => $this->normalizeUrl($url),
+            $sitemapUrls,
+        ), true);
+
+        foreach ($sitemapUrls as $url) {
+            if (strtolower((string) parse_url($url, PHP_URL_SCHEME)) === 'https') {
+                $data['sitemap_https_urls_count']++;
+            } else {
+                $data['sitemap_non_https_urls_count']++;
+            }
+        }
+
+        $checkData = $this->checkSitemapUrls($sitemapUrls);
+
+        return [...$data, ...$checkData];
+    }
+
+    /**
+     * @return null|array{type: string, locations: array<int, string>}
+     */
+    private function parseSitemapXml(string $xml): ?array
+    {
+        $document = new DOMDocument;
+        $previousErrorHandling = libxml_use_internal_errors(true);
+        $loaded = $document->loadXML($xml, LIBXML_NOERROR | LIBXML_NOWARNING | LIBXML_NONET);
+        libxml_clear_errors();
+        libxml_use_internal_errors($previousErrorHandling);
+
+        if (! $loaded || $document->documentElement === null) {
+            return null;
+        }
+
+        $rootName = strtolower($document->documentElement->localName);
+        if (! in_array($rootName, ['urlset', 'sitemapindex'], true)) {
+            return null;
+        }
+
+        $xpath = new DOMXPath($document);
+        $query = $rootName === 'urlset'
+            ? '/*[local-name()="urlset"]/*[local-name()="url"]/*[local-name()="loc"]'
+            : '/*[local-name()="sitemapindex"]/*[local-name()="sitemap"]/*[local-name()="loc"]';
+        $locations = [];
+        $locationLimit = $rootName === 'urlset' ? self::MAX_SITEMAP_URLS : self::MAX_CHILD_SITEMAPS;
+        foreach ($xpath->query($query) as $locationNode) {
+            if (count($locations) >= $locationLimit) {
+                break;
+            }
+
+            $location = trim((string) $locationNode->textContent);
+            if ($location !== '') {
+                $locations[] = $location;
+            }
+        }
+
+        return [
+            'type' => $rootName,
+            'locations' => $locations,
+        ];
+    }
+
+    /**
+     * @param  array<string, string>  $sitemapUrls
+     * @param  array<int, string>  $locations
+     */
+    private function addSitemapLocations(array &$sitemapUrls, array $locations, string $sitemapUrl): void
+    {
+        foreach ($locations as $location) {
+            if (count($sitemapUrls) >= self::MAX_SITEMAP_URLS) {
+                return;
+            }
+
+            $url = $this->resolveCheckableHttpUrl($sitemapUrl, $location);
+            if ($url !== null) {
+                $sitemapUrls[$this->normalizeUrl($url)] = $url;
+            }
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $urls
+     * @return array{sitemap_checked_urls_count: int, sitemap_broken_urls_count: int, sitemap_broken_urls_sample: array<int, string>}
+     */
+    private function checkSitemapUrls(array $urls): array
+    {
+        $checkedCount = 0;
+        $brokenCount = 0;
+        $brokenSample = [];
+
+        foreach (array_slice($urls, 0, self::MAX_CHECKED_SITEMAP_URLS) as $url) {
+            try {
+                $this->ensureUrlIsSafe($url);
+                $response = $this->fetchLink($url);
+            } catch (ValidationException) {
+                continue;
+            } catch (ConnectionException|RuntimeException) {
+                $checkedCount++;
+                $brokenCount++;
+                if (count($brokenSample) < self::MAX_BROKEN_LINKS_SAMPLE) {
+                    $brokenSample[] = $url;
+                }
+
+                continue;
+            }
+
+            $checkedCount++;
+            if ($response->status() >= 400) {
+                $brokenCount++;
+                if (count($brokenSample) < self::MAX_BROKEN_LINKS_SAMPLE) {
+                    $brokenSample[] = $url;
+                }
+            }
+        }
+
+        return [
+            'sitemap_checked_urls_count' => $checkedCount,
+            'sitemap_broken_urls_count' => $brokenCount,
+            'sitemap_broken_urls_sample' => $brokenSample,
+        ];
+    }
+
+    /**
+     * @return array{Response, string}
+     */
+    private function fetchResource(string $url): array
+    {
+        $currentUrl = $url;
+        $redirectCount = 0;
+
+        while (true) {
+            $this->ensureUrlIsSafe($currentUrl);
+            $response = $this->httpClient()->get($currentUrl);
+
+            if (! $this->isRedirect($response)) {
+                return [$response, $currentUrl];
+            }
+
+            $location = trim((string) $response->header('Location'));
+            if ($location === '') {
+                return [$response, $currentUrl];
+            }
+
+            if ($redirectCount >= self::MAX_REDIRECTS) {
+                throw new RuntimeException('The resource exceeded the redirect limit.');
+            }
+
+            $redirectUrl = $this->resolveCheckableHttpUrl($currentUrl, $location);
+            if ($redirectUrl === null) {
+                return [$response, $currentUrl];
+            }
+
+            $currentUrl = $redirectUrl;
+            $redirectCount++;
         }
     }
 

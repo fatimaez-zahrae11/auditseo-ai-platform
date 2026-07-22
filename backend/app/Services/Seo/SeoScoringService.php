@@ -72,6 +72,20 @@ class SeoScoringService
             $technicalScore -= 20;
         }
 
+        if (($data['robots_txt_allows_audited_url'] ?? true) === false) {
+            $technicalScore -= 40;
+        }
+
+        if (($data['sitemap_xml_found'] ?? false) && ! ($data['sitemap_xml_is_valid'] ?? false)) {
+            $technicalScore -= 20;
+        }
+
+        if (($data['sitemap_non_https_urls_count'] ?? 0) > 0) {
+            $technicalScore -= 15;
+        }
+
+        $technicalScore -= min(30, ((int) ($data['sitemap_broken_urls_count'] ?? 0)) * 10);
+
         if (($data['http_status_code'] ?? 200) !== 200) {
             $technicalScore -= 50;
         }
