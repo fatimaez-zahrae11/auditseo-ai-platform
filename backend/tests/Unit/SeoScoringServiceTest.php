@@ -43,17 +43,51 @@ class SeoScoringServiceTest extends TestCase
         }
     }
 
+    public function test_on_page_content_problems_reduce_and_clamp_the_content_score(): void
+    {
+        $service = new SeoScoringService;
+        $healthyScores = $service->calculate($this->completeData());
+        $weakScores = $service->calculate([
+            ...$this->completeData(),
+            'title_length' => 10,
+            'meta_description_length' => 20,
+            'word_count' => 20,
+            'title_matches_h1' => false,
+            'heading_structure' => [
+                ['tag' => 'h1', 'text' => 'Main heading'],
+                ['tag' => 'h3', 'text' => 'Skipped heading'],
+            ],
+            'images_alt_missing_ratio' => 0.5,
+        ]);
+
+        $this->assertSame(100, $healthyScores['content_score']);
+        $this->assertLessThan($healthyScores['content_score'], $weakScores['content_score']);
+        foreach ($weakScores as $score) {
+            $this->assertGreaterThanOrEqual(0, $score);
+            $this->assertLessThanOrEqual(100, $score);
+        }
+    }
+
     /**
-     * @return array<string, bool|int|string|null>
+     * @return array<string, mixed>
      */
     private function completeData(): array
     {
         return [
-            'title' => 'Page',
-            'meta_description' => 'Description',
+            'title' => 'A descriptive page title for content SEO',
+            'title_length' => 40,
+            'meta_description' => str_repeat('Useful description ', 5),
+            'meta_description_length' => 95,
+            'word_count' => 500,
             'h1_count' => 1,
             'h2_count' => 1,
+            'title_matches_h1' => true,
+            'heading_structure' => [
+                ['tag' => 'h1', 'text' => 'A descriptive page title for content SEO'],
+                ['tag' => 'h2', 'text' => 'Section'],
+            ],
             'images_missing_alt_count' => 0,
+            'images_alt_missing_ratio' => 0.0,
             'uses_https' => true,
             'robots_txt_found' => true,
             'sitemap_xml_found' => true,

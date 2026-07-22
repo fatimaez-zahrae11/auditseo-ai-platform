@@ -5,7 +5,7 @@ namespace App\Services\Seo;
 class SeoScoringService
 {
     /**
-     * @param  array<string, bool|int|string|null>  $data
+     * @param  array<string, mixed>  $data
      * @return array{global_score: int, technical_score: int, content_score: int, links_score: int, performance_score: int}
      */
     public function calculate(array $data): array
@@ -17,9 +17,19 @@ class SeoScoringService
 
         if ($data['title'] === null) {
             $contentScore -= 25;
+        } elseif (($data['title_length'] ?? mb_strlen($data['title'])) < 30
+            || ($data['title_length'] ?? mb_strlen($data['title'])) > 60) {
+            $contentScore -= 5;
         }
 
         if ($data['meta_description'] === null) {
+            $contentScore -= 20;
+        } elseif (($data['meta_description_length'] ?? mb_strlen($data['meta_description'])) < 70
+            || ($data['meta_description_length'] ?? mb_strlen($data['meta_description'])) > 160) {
+            $contentScore -= 5;
+        }
+
+        if (array_key_exists('word_count', $data) && $data['word_count'] < 300) {
             $contentScore -= 20;
         }
 
@@ -33,7 +43,22 @@ class SeoScoringService
             $contentScore -= 5;
         }
 
+        if ($data['title'] !== null
+            && $data['h1_count'] > 0
+            && array_key_exists('title_matches_h1', $data)
+            && ! $data['title_matches_h1']) {
+            $contentScore -= 5;
+        }
+
+        if ($this->headingStructureSkipsLevels($data['heading_structure'] ?? [])) {
+            $contentScore -= 5;
+        }
+
         $contentScore -= min(25, ((int) $data['images_missing_alt_count']) * 5);
+
+        if (($data['images_alt_missing_ratio'] ?? 0) > 0.3) {
+            $contentScore -= 10;
+        }
 
         if (! $data['uses_https']) {
             $technicalScore -= 40;
@@ -117,5 +142,24 @@ class SeoScoringService
     private function clamp(int $score): int
     {
         return max(0, min(100, $score));
+    }
+
+    /**
+     * @param  array<int, array{tag: string, text: string}>  $headings
+     */
+    private function headingStructureSkipsLevels(array $headings): bool
+    {
+        $previousLevel = null;
+
+        foreach ($headings as $heading) {
+            $level = (int) substr($heading['tag'], 1);
+            if ($previousLevel !== null && $level > $previousLevel + 1) {
+                return true;
+            }
+
+            $previousLevel = $level;
+        }
+
+        return false;
     }
 }

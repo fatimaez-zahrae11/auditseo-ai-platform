@@ -87,9 +87,9 @@ class AuditApiTest extends TestCase
             ->assertCreated()
             ->assertJsonPath('audit.domain.user_id', $user->id)
             ->assertJsonPath('audit.domain.domain_name', 'example.com')
-            ->assertJsonPath('audit.global_score', 100)
+            ->assertJsonPath('audit.global_score', 91)
             ->assertJsonPath('audit.technical_score', 100)
-            ->assertJsonPath('audit.content_score', 100)
+            ->assertJsonPath('audit.content_score', 65)
             ->assertJsonPath('audit.links_score', 100)
             ->assertJsonPath('audit.performance_score', 100)
             ->assertJsonPath('raw_data.title', 'Example Page')
@@ -103,9 +103,9 @@ class AuditApiTest extends TestCase
         ]);
         $this->assertDatabaseHas('audits', [
             'domain_id' => $response->json('audit.domain_id'),
-            'global_score' => 100,
+            'global_score' => 91,
             'technical_score' => 100,
-            'content_score' => 100,
+            'content_score' => 65,
             'links_score' => 100,
             'performance_score' => 100,
         ]);
@@ -178,6 +178,203 @@ class AuditApiTest extends TestCase
             ->assertJsonPath('raw_data.images_missing_alt_count', 0)
             ->assertJsonPath('raw_data.links_count', 1)
             ->assertJsonPath('raw_data.uses_https', true);
+    }
+
+    public function test_on_page_content_v2_fields_are_extracted_and_stored(): void
+    {
+        $title = 'Professional SEO Audit Guide | Brand';
+        $description = 'A practical guide to professional on-page SEO audits, content quality, headings, and accessible image optimization.';
+        $this->responseHtml = $this->contentHtml($title, $description, <<<'HTML'
+            <h1>Professional SEO Audit Guide</h1>
+            <h2>Content Analysis</h2>
+            <h3>Visible subsection</h3>
+            <p>Useful visible body copy for readers and search engines.</p>
+            <script>secret script words must not appear</script>
+            <style>.hidden { content: "style words"; }</style>
+            <noscript>hidden fallback words</noscript>
+            <svg><text>hidden vector words</text></svg>
+            HTML);
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.title_length', mb_strlen($title))
+            ->assertJsonPath('raw_data.meta_description_length', mb_strlen($description))
+            ->assertJsonPath('raw_data.h1_texts.0', 'Professional SEO Audit Guide')
+            ->assertJsonPath('raw_data.h2_texts.0', 'Content Analysis')
+            ->assertJsonPath('raw_data.heading_structure.0', [
+                'tag' => 'h1',
+                'text' => 'Professional SEO Audit Guide',
+            ])
+            ->assertJsonPath('raw_data.heading_structure.1', [
+                'tag' => 'h2',
+                'text' => 'Content Analysis',
+            ])
+            ->assertJsonPath('raw_data.heading_structure.2', [
+                'tag' => 'h3',
+                'text' => 'Visible subsection',
+            ])
+            ->assertJsonPath('raw_data.title_matches_h1', true);
+
+        $sample = $response->json('raw_data.visible_text_sample');
+        $this->assertIsString($sample);
+        $this->assertStringContainsString('Useful visible body copy', $sample);
+        $this->assertStringNotContainsString('secret script words', $sample);
+        $this->assertStringNotContainsString('hidden fallback words', $sample);
+        $this->assertLessThanOrEqual(500, mb_strlen($sample));
+        $this->assertGreaterThan(0, $response->json('raw_data.word_count'));
+
+        $stored = Audit::findOrFail($response->json('audit.id'))->raw_data;
+        $this->assertSame($stored['visible_text_sample'], $sample);
+        $this->assertSame($stored['heading_structure'], $response->json('raw_data.heading_structure'));
+    }
+
+    public function test_short_title_creates_a_minor_issue(): void
+    {
+        $this->responseHtml = $this->contentHtml(
+            'Short title',
+            str_repeat('Useful meta description ', 4),
+            '<h1>Short title</h1><h2>Section</h2><p>'.str_repeat('content ', 300).'</p>',
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonFragment([
+                'title' => 'Page title is too short',
+                'category' => 'content',
+                'severity' => 'minor',
+            ]);
+    }
+
+    public function test_long_title_creates_a_minor_issue(): void
+    {
+        $title = str_repeat('L', 61);
+        $this->responseHtml = $this->contentHtml(
+            $title,
+            str_repeat('Useful meta description ', 4),
+            "<h1>{$title}</h1><h2>Section</h2><p>".str_repeat('content ', 300).'</p>',
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonFragment([
+                'title' => 'Page title is too long',
+                'category' => 'content',
+                'severity' => 'minor',
+            ]);
+    }
+
+    public function test_short_meta_description_creates_a_minor_issue(): void
+    {
+        $title = 'A descriptive page title for content SEO';
+        $this->responseHtml = $this->contentHtml(
+            $title,
+            'Too short',
+            "<h1>{$title}</h1><h2>Section</h2><p>".str_repeat('content ', 300).'</p>',
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonFragment([
+                'title' => 'Meta description is too short',
+                'category' => 'content',
+                'severity' => 'minor',
+            ]);
+    }
+
+    public function test_long_meta_description_creates_a_minor_issue(): void
+    {
+        $title = 'A descriptive page title for content SEO';
+        $this->responseHtml = $this->contentHtml(
+            $title,
+            str_repeat('Long description content ', 8),
+            "<h1>{$title}</h1><h2>Section</h2><p>".str_repeat('content ', 300).'</p>',
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonFragment([
+                'title' => 'Meta description is too long',
+                'category' => 'content',
+                'severity' => 'minor',
+            ]);
+    }
+
+    public function test_low_word_count_creates_an_important_issue_and_reduces_content_score(): void
+    {
+        $title = 'A descriptive page title for content SEO';
+        $this->responseHtml = $this->contentHtml(
+            $title,
+            str_repeat('Useful meta description ', 4),
+            "<h1>{$title}</h1><h2>Section</h2><p>Only a few words.</p>",
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.word_count', 12)
+            ->assertJsonFragment([
+                'title' => 'Low word count',
+                'category' => 'content',
+                'severity' => 'important',
+            ]);
+        $this->assertLessThan(100, $response->json('audit.content_score'));
+    }
+
+    public function test_skipped_heading_level_and_title_h1_mismatch_create_minor_issues(): void
+    {
+        $this->responseHtml = $this->contentHtml(
+            'A descriptive page title for content SEO',
+            str_repeat('Useful meta description ', 4),
+            '<h1>A different primary topic</h1><h3>Skipped section</h3><p>'.str_repeat('content ', 300).'</p>',
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.title_matches_h1', false)
+            ->assertJsonFragment([
+                'title' => 'Page title does not align with H1',
+                'category' => 'content',
+                'severity' => 'minor',
+            ])
+            ->assertJsonFragment([
+                'title' => 'Heading structure skips levels',
+                'category' => 'content',
+                'severity' => 'minor',
+            ]);
+    }
+
+    public function test_high_missing_image_alt_ratio_creates_an_accessibility_issue(): void
+    {
+        $title = 'A descriptive page title for content SEO';
+        $this->responseHtml = $this->contentHtml(
+            $title,
+            str_repeat('Useful meta description ', 4),
+            "<h1>{$title}</h1><h2>Section</h2>".
+                '<img src="one.jpg"><img src="two.jpg" alt=""><img src="three.jpg" alt="Useful">'.
+                '<p>'.str_repeat('content ', 300).'</p>',
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.images_alt_missing_ratio', 0.6667)
+            ->assertJsonFragment([
+                'title' => 'High image alt text missing ratio',
+                'category' => 'accessibility',
+                'severity' => 'important',
+            ]);
     }
 
     public function test_link_seo_v2_classifies_internal_external_and_nofollow_links(): void
@@ -313,7 +510,7 @@ class AuditApiTest extends TestCase
 
         $response
             ->assertCreated()
-            ->assertJsonPath('audit.content_score', 75)
+            ->assertJsonPath('audit.content_score', 50)
             ->assertJsonFragment(['title' => 'Missing page title']);
         $this->assertDatabaseHas('audit_issues', ['title' => 'Missing page title']);
     }
@@ -327,7 +524,7 @@ class AuditApiTest extends TestCase
 
         $response
             ->assertCreated()
-            ->assertJsonPath('audit.content_score', 80)
+            ->assertJsonPath('audit.content_score', 50)
             ->assertJsonFragment(['title' => 'Missing meta description']);
         $this->assertDatabaseHas('audit_issues', ['title' => 'Missing meta description']);
     }
@@ -354,10 +551,10 @@ class AuditApiTest extends TestCase
         $response
             ->assertCreated()
             ->assertJsonPath('audit.technical_score', 100)
-            ->assertJsonPath('audit.content_score', 75)
+            ->assertJsonPath('audit.content_score', 50)
             ->assertJsonPath('audit.links_score', 70)
             ->assertJsonPath('audit.performance_score', 100)
-            ->assertJsonPath('audit.global_score', 86);
+            ->assertJsonPath('audit.global_score', 80);
     }
 
     public function test_all_calculated_scores_remain_between_zero_and_one_hundred(): void
@@ -625,6 +822,22 @@ class AuditApiTest extends TestCase
                     <h2>Secondary heading</h2>
                     {$links}
                 </body>
+            </html>
+            HTML;
+    }
+
+    private function contentHtml(string $title, string $description, string $body): string
+    {
+        return <<<HTML
+            <!doctype html>
+            <html lang="en">
+                <head>
+                    <title>{$title}</title>
+                    <meta name="description" content="{$description}">
+                    <meta name="viewport" content="width=device-width, initial-scale=1">
+                    <link rel="canonical" href="/page">
+                </head>
+                <body>{$body}</body>
             </html>
             HTML;
     }

@@ -96,10 +96,52 @@ class AuditController extends Controller
 
         if ($data['title'] === null) {
             $issues[] = $this->issue('content', 'Missing page title', 'important', 'Add a descriptive title element.');
+        } elseif ($data['title_length'] < 30) {
+            $issues[] = $this->issue(
+                'content',
+                'Page title is too short',
+                'minor',
+                'Expand the page title to between 30 and 60 characters.',
+                "The page title is {$data['title_length']} characters long.",
+            );
+        } elseif ($data['title_length'] > 60) {
+            $issues[] = $this->issue(
+                'content',
+                'Page title is too long',
+                'minor',
+                'Shorten the page title to between 30 and 60 characters.',
+                "The page title is {$data['title_length']} characters long.",
+            );
         }
 
         if ($data['meta_description'] === null) {
             $issues[] = $this->issue('content', 'Missing meta description', 'important', 'Add a concise meta description.');
+        } elseif ($data['meta_description_length'] < 70) {
+            $issues[] = $this->issue(
+                'content',
+                'Meta description is too short',
+                'minor',
+                'Expand the meta description to between 70 and 160 characters.',
+                "The meta description is {$data['meta_description_length']} characters long.",
+            );
+        } elseif ($data['meta_description_length'] > 160) {
+            $issues[] = $this->issue(
+                'content',
+                'Meta description is too long',
+                'minor',
+                'Shorten the meta description to between 70 and 160 characters.',
+                "The meta description is {$data['meta_description_length']} characters long.",
+            );
+        }
+
+        if ($data['word_count'] < 300) {
+            $issues[] = $this->issue(
+                'content',
+                'Low word count',
+                'important',
+                'Add useful, original content that fully addresses the page topic.',
+                "The page contains {$data['word_count']} visible words; at least 300 are recommended.",
+            );
         }
 
         if ($data['h1_count'] === 0) {
@@ -112,6 +154,24 @@ class AuditController extends Controller
             $issues[] = $this->issue('content', 'Missing H2 heading', 'minor', 'Add descriptive H2 headings to structure the page content.');
         }
 
+        if ($data['title'] !== null && $data['h1_count'] > 0 && ! $data['title_matches_h1']) {
+            $issues[] = $this->issue(
+                'content',
+                'Page title does not align with H1',
+                'minor',
+                'Align the page title and primary H1 around the same topic and search intent.',
+            );
+        }
+
+        if ($this->headingStructureSkipsLevels($data['heading_structure'])) {
+            $issues[] = $this->issue(
+                'content',
+                'Heading structure skips levels',
+                'minor',
+                'Use heading levels in a logical sequence without skipping intermediate levels.',
+            );
+        }
+
         if ($data['images_missing_alt_count'] > 0) {
             $issues[] = $this->issue(
                 'content',
@@ -119,6 +179,17 @@ class AuditController extends Controller
                 'important',
                 'Add meaningful alt text to informative images.',
                 "{$data['images_missing_alt_count']} image(s) are missing alt text.",
+            );
+        }
+
+        if ($data['images_alt_missing_ratio'] > 0.3) {
+            $missingPercentage = (int) round($data['images_alt_missing_ratio'] * 100);
+            $issues[] = $this->issue(
+                'accessibility',
+                'High image alt text missing ratio',
+                'important',
+                'Add meaningful alt text to informative images and empty alt attributes to decorative images.',
+                "{$missingPercentage}% of images are missing alt text.",
             );
         }
 
@@ -241,5 +312,24 @@ class AuditController extends Controller
         ?string $description = null,
     ): array {
         return compact('category', 'title', 'severity', 'description', 'recommendation');
+    }
+
+    /**
+     * @param  array<int, array{tag: string, text: string}>  $headings
+     */
+    private function headingStructureSkipsLevels(array $headings): bool
+    {
+        $previousLevel = null;
+
+        foreach ($headings as $heading) {
+            $level = (int) substr($heading['tag'], 1);
+            if ($previousLevel !== null && $level > $previousLevel + 1) {
+                return true;
+            }
+
+            $previousLevel = $level;
+        }
+
+        return false;
     }
 }

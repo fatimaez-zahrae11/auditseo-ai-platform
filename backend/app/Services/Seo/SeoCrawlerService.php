@@ -19,6 +19,8 @@ class SeoCrawlerService
 
     private const MAX_BROKEN_LINKS_SAMPLE = 5;
 
+    private const VISIBLE_TEXT_SAMPLE_LENGTH = 500;
+
     private const GENERIC_ANCHOR_TEXTS = [
         'click here',
         'here',
@@ -213,10 +215,19 @@ class SeoCrawlerService
         $imagesMissingAlt = $xpath->query('//img[not(@alt) or normalize-space(@alt) = ""]');
         $links = $xpath->query('//a[@href]');
         $linkData = $this->analyzeLinks($links, $url);
+        $headingData = $this->analyzeHeadings($xpath);
+        $visibleText = $this->extractVisibleText($xpath);
+        $wordCount = $this->countWords($visibleText);
+        $imagesCount = $images->length;
+        $imagesMissingAltCount = $imagesMissingAlt->length;
 
         return [
             'title' => $title !== '' ? $title : null,
+            'title_length' => mb_strlen($title),
             'meta_description' => $description !== '' ? $description : null,
+            'meta_description_length' => mb_strlen($description),
+            'word_count' => $wordCount,
+            'visible_text_sample' => mb_substr($visibleText, 0, self::VISIBLE_TEXT_SAMPLE_LENGTH),
             'canonical_url' => $canonicalUrl,
             'canonical_matches_final_url' => $canonicalUrl !== null
                 ? $this->normalizeUrl($canonicalUrl) === $this->normalizeUrl($url)
@@ -233,12 +244,104 @@ class SeoCrawlerService
             'h4_count' => $xpath->query('//h4')->length,
             'h5_count' => $xpath->query('//h5')->length,
             'h6_count' => $xpath->query('//h6')->length,
-            'images_count' => $images->length,
-            'images_missing_alt_count' => $imagesMissingAlt->length,
+            ...$headingData,
+            'title_matches_h1' => $this->titleMatchesH1($title, $headingData['h1_texts']),
+            'images_count' => $imagesCount,
+            'images_missing_alt_count' => $imagesMissingAltCount,
+            'images_alt_missing_ratio' => $imagesCount > 0
+                ? round($imagesMissingAltCount / $imagesCount, 4)
+                : 0.0,
             'links_count' => $links->length,
             ...$linkData,
             'uses_https' => strtolower((string) parse_url($url, PHP_URL_SCHEME)) === 'https',
         ];
+    }
+
+    /**
+     * @return array{h1_texts: array<int, string>, h2_texts: array<int, string>, heading_structure: array<int, array{tag: string, text: string}>}
+     */
+    private function analyzeHeadings(DOMXPath $xpath): array
+    {
+        $h1Texts = [];
+        $h2Texts = [];
+        $headingStructure = [];
+
+        foreach ($xpath->query('//h1 | //h2 | //h3 | //h4 | //h5 | //h6') as $heading) {
+            $tag = strtolower($heading->nodeName);
+            $text = $this->normalizeWhitespace((string) $heading->textContent);
+            $headingStructure[] = ['tag' => $tag, 'text' => $text];
+
+            if ($tag === 'h1') {
+                $h1Texts[] = $text;
+            } elseif ($tag === 'h2') {
+                $h2Texts[] = $text;
+            }
+        }
+
+        return [
+            'h1_texts' => $h1Texts,
+            'h2_texts' => $h2Texts,
+            'heading_structure' => $headingStructure,
+        ];
+    }
+
+    private function extractVisibleText(DOMXPath $xpath): string
+    {
+        $parts = [];
+        $textNodes = $xpath->query(
+            '//body//text()[not(ancestor::script) and not(ancestor::style) and not(ancestor::noscript) and not(ancestor::svg)]',
+        );
+
+        foreach ($textNodes as $textNode) {
+            $text = $this->normalizeWhitespace((string) $textNode->nodeValue);
+            if ($text !== '') {
+                $parts[] = $text;
+            }
+        }
+
+        return $this->normalizeWhitespace(implode(' ', $parts));
+    }
+
+    private function countWords(string $text): int
+    {
+        return (int) preg_match_all("/[\\p{L}\\p{N}]+(?:['’\x{2010}-\x{2015}][\\p{L}\\p{N}]+)*/u", $text);
+    }
+
+    /**
+     * @param  array<int, string>  $h1Texts
+     */
+    private function titleMatchesH1(string $title, array $h1Texts): bool
+    {
+        $normalizedTitle = $this->normalizeComparableText($title);
+        if ($normalizedTitle === '') {
+            return false;
+        }
+
+        foreach ($h1Texts as $h1Text) {
+            $normalizedH1 = $this->normalizeComparableText($h1Text);
+            if ($normalizedH1 !== '' && (
+                $normalizedTitle === $normalizedH1
+                || str_contains($normalizedTitle, $normalizedH1)
+                || str_contains($normalizedH1, $normalizedTitle)
+            )) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function normalizeComparableText(string $text): string
+    {
+        $text = mb_strtolower($text);
+        $text = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $text) ?? '';
+
+        return $this->normalizeWhitespace($text);
+    }
+
+    private function normalizeWhitespace(string $text): string
+    {
+        return trim(preg_replace('/\s+/u', ' ', $text) ?? '');
     }
 
     /**
