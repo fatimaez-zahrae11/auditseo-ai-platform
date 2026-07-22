@@ -62,8 +62,10 @@ class SeoCrawlerService
             'redirect_count' => $redirectCount,
             'response_time_ms' => max(0, $responseTimeMs),
             'page_size_bytes' => strlen($html),
+            ...$this->performanceMetadata($response, $html),
             ...$data,
         ];
+        $data['performance_warnings_count'] = $this->performanceWarningsCount($data);
         $data['is_indexable'] = $data['http_status_code'] === 200 && $data['is_indexable'];
 
         $origin = $this->origin($finalUrl);
@@ -503,12 +505,17 @@ class SeoCrawlerService
             $depth = $item['depth'];
 
             try {
+                $startedAt = hrtime(true);
                 [$response, $finalPageUrl] = $this->fetchCrawlPage($pageUrl);
+                $responseTimeMs = (int) round((hrtime(true) - $startedAt) / 1_000_000);
             } catch (ConnectionException|RuntimeException|ValidationException) {
                 continue;
             }
 
-            $pageData = $this->extractSeoData($response->body(), $finalPageUrl);
+            $body = $response->body();
+            $pageData = $this->extractSeoData($body, $finalPageUrl);
+            $pageData['response_time_ms'] = max(0, $responseTimeMs);
+            $pageData['page_size_bytes'] = strlen($body);
             $pageData['is_indexable'] = $response->status() === 200 && $pageData['is_indexable'];
             $crawledPages[] = $this->compactCrawledPage($finalPageUrl, $response->status(), $depth, $pageData);
 
@@ -562,7 +569,7 @@ class SeoCrawlerService
 
     /**
      * @param  array<string, mixed>  $data
-     * @return array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool}
+     * @return array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool, response_time_ms: int, page_size_bytes: int}
      */
     private function compactCrawledPage(string $url, int $statusCode, int $depth, array $data): array
     {
@@ -575,11 +582,13 @@ class SeoCrawlerService
             'h1' => $data['h1_texts'][0] ?? null,
             'word_count' => (int) $data['word_count'],
             'is_indexable' => (bool) $data['is_indexable'],
+            'response_time_ms' => max(0, (int) ($data['response_time_ms'] ?? 0)),
+            'page_size_bytes' => max(0, (int) ($data['page_size_bytes'] ?? 0)),
         ];
     }
 
     /**
-     * @param  array<int, array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool}>  $pages
+     * @param  array<int, array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool, response_time_ms: int, page_size_bytes: int}>  $pages
      * @return array<string, int>
      */
     private function summarizeCrawledPages(array $pages): array
@@ -1106,6 +1115,60 @@ class SeoCrawlerService
             $currentUrl = $redirectUrl;
             $redirectCount++;
         }
+    }
+
+    /**
+     * @return array{content_type: ?string, content_encoding: ?string, compression_enabled: bool, cache_control: ?string, cache_headers_present: bool, server_header: ?string, html_size_kb: float, is_html_response: bool}
+     */
+    private function performanceMetadata(Response $response, string $body): array
+    {
+        $contentType = $this->nullableTrimmed((string) $response->header('Content-Type'));
+        $contentEncoding = $this->nullableTrimmed((string) $response->header('Content-Encoding'));
+        $cacheControl = $this->nullableTrimmed((string) $response->header('Cache-Control'));
+        $expires = $this->nullableTrimmed((string) $response->header('Expires'));
+        $etag = $this->nullableTrimmed((string) $response->header('ETag'));
+        $server = $this->nullableTrimmed((string) $response->header('Server'));
+        $isHtml = $contentType !== null
+            && preg_match('#^(?:text/html|application/xhtml\+xml)(?:\s*;|$)#i', $contentType) === 1;
+        $compressionEnabled = $contentEncoding !== null
+            && preg_match('/(?:^|[,\s])(?:gzip|br|deflate)(?:[,\s]|$)/i', $contentEncoding) === 1;
+
+        return [
+            'content_type' => $contentType,
+            'content_encoding' => $contentEncoding,
+            'compression_enabled' => $compressionEnabled,
+            'cache_control' => $cacheControl,
+            'cache_headers_present' => $cacheControl !== null || $expires !== null || $etag !== null,
+            'server_header' => $server,
+            'html_size_kb' => round(strlen($body) / 1024, 2),
+            'is_html_response' => $isHtml,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function performanceWarningsCount(array $data): int
+    {
+        $warnings = 0;
+
+        if (($data['response_time_ms'] ?? 0) > 2000) {
+            $warnings++;
+        }
+
+        if (($data['page_size_bytes'] ?? 0) > 1_000_000) {
+            $warnings++;
+        }
+
+        if (($data['is_html_response'] ?? false) && ! ($data['compression_enabled'] ?? false)) {
+            $warnings++;
+        }
+
+        if (! ($data['cache_headers_present'] ?? false)) {
+            $warnings++;
+        }
+
+        return $warnings;
     }
 
     private function nullableTrimmed(string $value): ?string

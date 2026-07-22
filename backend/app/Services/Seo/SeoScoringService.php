@@ -104,6 +104,10 @@ class SeoScoringService
             $technicalScore -= 10;
         }
 
+        if (array_key_exists('is_html_response', $data) && ! $data['is_html_response']) {
+            $technicalScore -= 20;
+        }
+
         if (array_key_exists('canonical_url', $data) && $data['canonical_url'] === null) {
             $technicalScore -= 10;
         } elseif (isset($data['canonical_url']) && ! ($data['canonical_matches_final_url'] ?? false)) {
@@ -134,16 +138,26 @@ class SeoScoringService
         $linksScore -= min(15, ((int) ($data['empty_anchor_links_count'] ?? 0)) * 3);
         $linksScore -= min(15, ((int) ($data['generic_anchor_links_count'] ?? 0)) * 3);
 
-        if (($data['response_time_ms'] ?? 0) > 2000) {
+        if (($data['response_time_ms'] ?? 0) > 5000) {
+            $performanceScore -= 45;
+        } elseif (($data['response_time_ms'] ?? 0) > 2000) {
             $performanceScore -= 20;
         } elseif (($data['response_time_ms'] ?? 0) > 1000) {
             $performanceScore -= 10;
         }
 
-        if (($data['page_size_bytes'] ?? 0) > 3 * 1024 * 1024) {
+        if (($data['page_size_bytes'] ?? 0) > 3_000_000) {
+            $performanceScore -= 40;
+        } elseif (($data['page_size_bytes'] ?? 0) > 1_000_000) {
             $performanceScore -= 20;
-        } elseif (($data['page_size_bytes'] ?? 0) > 1024 * 1024) {
-            $performanceScore -= 10;
+        }
+
+        if (($data['is_html_response'] ?? false) && ! ($data['compression_enabled'] ?? false)) {
+            $performanceScore -= 20;
+        }
+
+        if (array_key_exists('cache_headers_present', $data) && ! $data['cache_headers_present']) {
+            $performanceScore -= 5;
         }
 
         $technicalScore = $this->clamp($technicalScore);

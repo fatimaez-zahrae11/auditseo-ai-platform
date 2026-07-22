@@ -28,6 +28,13 @@ class AuditApiTest extends TestCase
     private string $sitemapBody;
 
     /**
+     * @var array<string, string>
+     */
+    private array $responseHeaders;
+
+    private int $responseDelayMicroseconds;
+
+    /**
      * @var array<string, int>
      */
     private array $linkStatuses;
@@ -52,6 +59,13 @@ class AuditApiTest extends TestCase
         $this->pageStatus = 200;
         $this->robotsBody = 'User-agent: *';
         $this->sitemapBody = '<urlset></urlset>';
+        $this->responseHeaders = [
+            'Content-Type' => 'text/html; charset=UTF-8',
+            'Content-Encoding' => 'gzip',
+            'Cache-Control' => 'public, max-age=300',
+            'Server' => 'example-server',
+        ];
+        $this->responseDelayMicroseconds = 0;
         $this->redirects = [];
         $this->linkStatuses = [];
         $this->pageResponses = [
@@ -90,7 +104,11 @@ class AuditApiTest extends TestCase
                 return Http::response('', $this->linkStatuses[$request->url()]);
             }
 
-            return Http::response($this->responseHtml, $this->pageStatus, ['Content-Type' => 'text/html']);
+            if ($this->responseDelayMicroseconds > 0) {
+                usleep($this->responseDelayMicroseconds);
+            }
+
+            return Http::response($this->responseHtml, $this->pageStatus, $this->responseHeaders);
         });
     }
 
@@ -772,6 +790,12 @@ class AuditApiTest extends TestCase
             ->assertJsonPath('raw_data.crawled_pages.1.is_indexable', true);
 
         $this->assertGreaterThanOrEqual(300, $response->json('raw_data.crawled_pages.1.word_count'));
+        $this->assertIsInt($response->json('raw_data.crawled_pages.1.response_time_ms'));
+        $this->assertGreaterThanOrEqual(0, $response->json('raw_data.crawled_pages.1.response_time_ms'));
+        $this->assertSame(
+            strlen($this->pageResponses['https://example.com/same']['body']),
+            $response->json('raw_data.crawled_pages.1.page_size_bytes'),
+        );
         $this->assertArrayNotHasKey('visible_text_sample', $response->json('raw_data.crawled_pages.1'));
     }
 
@@ -1091,6 +1115,144 @@ class AuditApiTest extends TestCase
         $stored = Audit::findOrFail($response->json('audit.id'))->raw_data;
         $this->assertSame(strlen($this->responseHtml), $stored['page_size_bytes']);
         $this->assertArrayHasKey('response_time_ms', $stored);
+    }
+
+    public function test_performance_response_metadata_is_extracted_and_stored(): void
+    {
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.content_type', 'text/html; charset=UTF-8')
+            ->assertJsonPath('raw_data.content_encoding', 'gzip')
+            ->assertJsonPath('raw_data.compression_enabled', true)
+            ->assertJsonPath('raw_data.cache_control', 'public, max-age=300')
+            ->assertJsonPath('raw_data.cache_headers_present', true)
+            ->assertJsonPath('raw_data.server_header', 'example-server')
+            ->assertJsonPath('raw_data.is_html_response', true)
+            ->assertJsonPath('raw_data.performance_warnings_count', 0)
+            ->assertJsonPath('raw_data.html_size_kb', round(strlen($this->responseHtml) / 1024, 2));
+
+        $stored = Audit::findOrFail($response->json('audit.id'))->raw_data;
+        $this->assertSame('gzip', $stored['content_encoding']);
+        $this->assertTrue($stored['compression_enabled']);
+        $this->assertTrue($stored['cache_headers_present']);
+    }
+
+    public function test_slow_response_creates_an_important_performance_issue(): void
+    {
+        $this->responseDelayMicroseconds = 2_050_000;
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonFragment([
+                'title' => 'Page response is slow',
+                'category' => 'performance',
+                'severity' => 'important',
+            ]);
+        $this->assertGreaterThan(2000, $response->json('raw_data.response_time_ms'));
+        $this->assertLessThan(100, $response->json('audit.performance_score'));
+    }
+
+    public function test_very_slow_response_creates_a_critical_performance_issue(): void
+    {
+        $this->responseDelayMicroseconds = 5_050_000;
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonFragment([
+                'title' => 'Page response is very slow',
+                'category' => 'performance',
+                'severity' => 'critical',
+            ])
+            ->assertJsonMissing(['title' => 'Page response is slow']);
+        $this->assertGreaterThan(5000, $response->json('raw_data.response_time_ms'));
+    }
+
+    public function test_large_page_creates_an_important_performance_issue(): void
+    {
+        $this->responseHtml .= str_repeat(' ', 1_000_001);
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonFragment([
+                'title' => 'HTML page payload is large',
+                'category' => 'performance',
+                'severity' => 'important',
+            ])
+            ->assertJsonPath('raw_data.performance_warnings_count', 1);
+    }
+
+    public function test_very_large_page_creates_a_critical_performance_issue(): void
+    {
+        $this->responseHtml .= str_repeat(' ', 3_000_001);
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonFragment([
+                'title' => 'HTML page payload is very large',
+                'category' => 'performance',
+                'severity' => 'critical',
+            ])
+            ->assertJsonMissing(['title' => 'HTML page payload is large']);
+    }
+
+    public function test_missing_html_compression_creates_an_important_performance_issue(): void
+    {
+        unset($this->responseHeaders['Content-Encoding']);
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.content_encoding', null)
+            ->assertJsonPath('raw_data.compression_enabled', false)
+            ->assertJsonFragment([
+                'title' => 'HTML response compression is missing',
+                'category' => 'performance',
+                'severity' => 'important',
+            ]);
+    }
+
+    public function test_missing_cache_headers_creates_a_minor_performance_issue(): void
+    {
+        unset($this->responseHeaders['Cache-Control']);
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.cache_control', null)
+            ->assertJsonPath('raw_data.cache_headers_present', false)
+            ->assertJsonFragment([
+                'title' => 'Cache headers are missing',
+                'category' => 'performance',
+                'severity' => 'minor',
+            ]);
+    }
+
+    public function test_non_html_response_creates_an_important_technical_issue(): void
+    {
+        $this->responseHeaders['Content-Type'] = 'application/json';
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.content_type', 'application/json')
+            ->assertJsonPath('raw_data.is_html_response', false)
+            ->assertJsonFragment([
+                'title' => 'Audited page is not an HTML response',
+                'category' => 'technical',
+                'severity' => 'important',
+            ]);
     }
 
     public function test_missing_canonical_viewport_and_html_lang_create_issues(): void

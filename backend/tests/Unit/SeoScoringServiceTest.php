@@ -22,7 +22,32 @@ class SeoScoringServiceTest extends TestCase
         ]);
 
         $this->assertSame(80, $slowScores['performance_score']);
-        $this->assertSame(80, $largeScores['performance_score']);
+        $this->assertSame(60, $largeScores['performance_score']);
+    }
+
+    public function test_performance_metadata_problems_reduce_and_clamp_scores(): void
+    {
+        $service = new SeoScoringService;
+        $healthyScores = $service->calculate($this->completeData());
+        $weakScores = $service->calculate([
+            ...$this->completeData(),
+            'response_time_ms' => 6000,
+            'page_size_bytes' => 4_000_000,
+            'compression_enabled' => false,
+            'cache_headers_present' => false,
+        ]);
+        $nonHtmlScores = $service->calculate([
+            ...$this->completeData(),
+            'is_html_response' => false,
+        ]);
+
+        $this->assertSame(100, $healthyScores['performance_score']);
+        $this->assertSame(0, $weakScores['performance_score']);
+        $this->assertLessThan($healthyScores['technical_score'], $nonHtmlScores['technical_score']);
+        foreach ($weakScores as $score) {
+            $this->assertGreaterThanOrEqual(0, $score);
+            $this->assertLessThanOrEqual(100, $score);
+        }
     }
 
     public function test_link_problems_reduce_and_clamp_the_links_score(): void
@@ -158,6 +183,9 @@ class SeoScoringServiceTest extends TestCase
             'links_count' => 1,
             'response_time_ms' => 100,
             'page_size_bytes' => 1000,
+            'is_html_response' => true,
+            'compression_enabled' => true,
+            'cache_headers_present' => true,
         ];
     }
 }

@@ -372,6 +372,71 @@ class AuditController extends Controller
             );
         }
 
+        if (($data['response_time_ms'] ?? 0) > 5000) {
+            $issues[] = $this->issue(
+                'performance',
+                'Page response is very slow',
+                'critical',
+                'Reduce server response time by profiling backend work, database queries, and upstream dependencies.',
+                "The audited page responded in {$data['response_time_ms']} ms.",
+            );
+        } elseif (($data['response_time_ms'] ?? 0) > 2000) {
+            $issues[] = $this->issue(
+                'performance',
+                'Page response is slow',
+                'important',
+                'Improve server response time with backend optimization, caching, and faster infrastructure where appropriate.',
+                "The audited page responded in {$data['response_time_ms']} ms.",
+            );
+        }
+
+        if (($data['page_size_bytes'] ?? 0) > 3_000_000) {
+            $issues[] = $this->issue(
+                'performance',
+                'HTML page payload is very large',
+                'critical',
+                'Substantially reduce the HTML payload by removing unnecessary markup and embedded content.',
+                "The HTML response is {$data['page_size_bytes']} bytes.",
+            );
+        } elseif (($data['page_size_bytes'] ?? 0) > 1_000_000) {
+            $issues[] = $this->issue(
+                'performance',
+                'HTML page payload is large',
+                'important',
+                'Reduce unnecessary markup and embedded content in the HTML response.',
+                "The HTML response is {$data['page_size_bytes']} bytes.",
+            );
+        }
+
+        if (($data['is_html_response'] ?? false) && ! ($data['compression_enabled'] ?? false)) {
+            $issues[] = $this->issue(
+                'performance',
+                'HTML response compression is missing',
+                'important',
+                'Enable Brotli or gzip compression for HTML responses.',
+            );
+        }
+
+        if (array_key_exists('cache_headers_present', $data) && ! $data['cache_headers_present']) {
+            $issues[] = $this->issue(
+                'performance',
+                'Cache headers are missing',
+                'minor',
+                'Send an appropriate Cache-Control, Expires, or ETag header for the audited page.',
+            );
+        }
+
+        if (array_key_exists('is_html_response', $data) && ! $data['is_html_response']) {
+            $contentType = $data['content_type'] ?? 'not provided';
+            $issues[] = $this->issue(
+                'technical',
+                'Audited page is not an HTML response',
+                'important',
+                'Serve the audited page with an HTML Content-Type such as text/html.',
+                "The response Content-Type is {$contentType}.",
+            );
+        }
+
         if ($data['canonical_url'] === null) {
             $issues[] = $this->issue('indexability', 'Missing canonical tag', 'important', 'Add a self-referencing canonical link to the page head.');
         } elseif (! $data['canonical_matches_final_url']) {
