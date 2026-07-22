@@ -21,6 +21,13 @@ class AuditApiTest extends TestCase
 
     private int $sitemapStatus;
 
+    private int $pageStatus;
+
+    /**
+     * @var array<string, array{status: int, location: string}>
+     */
+    private array $redirects;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -28,8 +35,16 @@ class AuditApiTest extends TestCase
         $this->responseHtml = $this->completeHtml();
         $this->robotsStatus = 200;
         $this->sitemapStatus = 200;
+        $this->pageStatus = 200;
+        $this->redirects = [];
 
         Http::fake(function (Request $request) {
+            if (isset($this->redirects[$request->url()])) {
+                $redirect = $this->redirects[$request->url()];
+
+                return Http::response('', $redirect['status'], ['Location' => $redirect['location']]);
+            }
+
             if (str_ends_with($request->url(), '/robots.txt')) {
                 return Http::response('User-agent: *', $this->robotsStatus);
             }
@@ -38,7 +53,7 @@ class AuditApiTest extends TestCase
                 return Http::response('<urlset></urlset>', $this->sitemapStatus);
             }
 
-            return Http::response($this->responseHtml, 200, ['Content-Type' => 'text/html']);
+            return Http::response($this->responseHtml, $this->pageStatus, ['Content-Type' => 'text/html']);
         });
     }
 
@@ -157,7 +172,7 @@ class AuditApiTest extends TestCase
 
     public function test_missing_title_creates_an_audit_issue(): void
     {
-        $this->responseHtml = '<html><head><meta name="description" content="Present"></head><body><h1>Heading</h1></body></html>';
+        $this->responseHtml = '<html lang="en"><head><link rel="canonical" href="/"><meta name="viewport" content="width=device-width"><meta name="description" content="Present"></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
         Sanctum::actingAs(User::factory()->create());
 
         $response = $this->postJson('/api/audits', ['url' => 'https://example.com']);
@@ -171,7 +186,7 @@ class AuditApiTest extends TestCase
 
     public function test_missing_meta_description_creates_an_audit_issue(): void
     {
-        $this->responseHtml = '<html><head><title>Present</title></head><body><h1>Heading</h1></body></html>';
+        $this->responseHtml = '<html lang="en"><head><link rel="canonical" href="/"><meta name="viewport" content="width=device-width"><title>Present</title></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
         Sanctum::actingAs(User::factory()->create());
 
         $response = $this->postJson('/api/audits', ['url' => 'https://example.com']);
@@ -197,7 +212,7 @@ class AuditApiTest extends TestCase
 
     public function test_global_score_is_the_rounded_average_of_category_scores(): void
     {
-        $this->responseHtml = '<html><head><meta name="description" content="Present"></head><body><h1>Heading</h1></body></html>';
+        $this->responseHtml = '<html lang="en"><head><link rel="canonical" href="/page"><meta name="viewport" content="width=device-width"><meta name="description" content="Present"></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
         Sanctum::actingAs(User::factory()->create());
 
         $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
@@ -244,6 +259,115 @@ class AuditApiTest extends TestCase
             'title' => 'Images missing alt text',
             'description' => '2 image(s) are missing alt text.',
         ]);
+    }
+
+    public function test_technical_seo_v2_fields_are_extracted_and_stored(): void
+    {
+        $this->responseHtml = <<<'HTML'
+            <!doctype html>
+            <html lang="fr">
+                <head>
+                    <title>Technical SEO</title>
+                    <meta name="description" content="Technical SEO checks">
+                    <meta name="viewport" content="width=device-width, initial-scale=1">
+                    <link rel="canonical" href="/technical">
+                </head>
+                <body>
+                    <h1>One</h1><h2>Two</h2><h3>Three</h3>
+                    <h4>Four</h4><h5>Five</h5><h6>Six</h6>
+                    <a href="/next">Next</a>
+                </body>
+            </html>
+            HTML;
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/technical']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.http_status_code', 200)
+            ->assertJsonPath('raw_data.final_url', 'https://example.com/technical')
+            ->assertJsonPath('raw_data.redirect_count', 0)
+            ->assertJsonPath('raw_data.canonical_url', 'https://example.com/technical')
+            ->assertJsonPath('raw_data.canonical_matches_final_url', true)
+            ->assertJsonPath('raw_data.html_lang', 'fr')
+            ->assertJsonPath('raw_data.viewport_found', true)
+            ->assertJsonPath('raw_data.h1_count', 1)
+            ->assertJsonPath('raw_data.h2_count', 1)
+            ->assertJsonPath('raw_data.h3_count', 1)
+            ->assertJsonPath('raw_data.h4_count', 1)
+            ->assertJsonPath('raw_data.h5_count', 1)
+            ->assertJsonPath('raw_data.h6_count', 1)
+            ->assertJsonPath('raw_data.page_size_bytes', strlen($this->responseHtml));
+
+        $this->assertIsInt($response->json('raw_data.response_time_ms'));
+        $this->assertGreaterThanOrEqual(0, $response->json('raw_data.response_time_ms'));
+        $stored = Audit::findOrFail($response->json('audit.id'))->raw_data;
+        $this->assertSame(strlen($this->responseHtml), $stored['page_size_bytes']);
+        $this->assertArrayHasKey('response_time_ms', $stored);
+    }
+
+    public function test_missing_canonical_viewport_and_html_lang_create_issues(): void
+    {
+        $this->responseHtml = '<html><head><title>Page</title><meta name="description" content="Description"></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.canonical_url', null)
+            ->assertJsonPath('raw_data.viewport_found', false)
+            ->assertJsonPath('raw_data.html_lang', null)
+            ->assertJsonFragment(['title' => 'Missing canonical tag', 'category' => 'indexability', 'severity' => 'important'])
+            ->assertJsonFragment(['title' => 'Missing meta viewport', 'category' => 'technical', 'severity' => 'important'])
+            ->assertJsonFragment(['title' => 'Missing HTML lang attribute', 'category' => 'accessibility', 'severity' => 'minor']);
+    }
+
+    public function test_meta_robots_noindex_creates_a_critical_issue(): void
+    {
+        $this->responseHtml = '<html lang="en"><head><title>Page</title><meta name="description" content="Description"><meta name="viewport" content="width=device-width"><meta name="robots" content="noindex, follow"><link rel="canonical" href="/page"></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.meta_robots', 'noindex, follow')
+            ->assertJsonPath('raw_data.is_indexable', false)
+            ->assertJsonFragment(['title' => 'Page is marked noindex', 'category' => 'indexability', 'severity' => 'critical']);
+    }
+
+    public function test_non_200_final_response_is_audited_as_a_critical_issue(): void
+    {
+        $this->pageStatus = 404;
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.http_status_code', 404)
+            ->assertJsonPath('raw_data.is_indexable', false)
+            ->assertJsonFragment(['title' => 'Page does not return HTTP 200', 'category' => 'technical', 'severity' => 'critical']);
+    }
+
+    public function test_redirect_chain_and_final_url_are_recorded(): void
+    {
+        $this->redirects = [
+            'https://example.com/start' => ['status' => 301, 'location' => '/middle'],
+            'https://example.com/middle' => ['status' => 302, 'location' => 'https://example.com/page'],
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/start']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.final_url', 'https://example.com/page')
+            ->assertJsonPath('raw_data.redirect_count', 2)
+            ->assertJsonPath('raw_data.canonical_matches_final_url', true)
+            ->assertJsonFragment(['title' => 'Page has a redirect chain', 'category' => 'technical', 'severity' => 'minor']);
     }
 
     public function test_unsafe_urls_are_rejected_without_making_http_requests(): void
@@ -333,10 +457,12 @@ class AuditApiTest extends TestCase
     {
         return <<<'HTML'
             <!doctype html>
-            <html>
+            <html lang="en">
                 <head>
                     <title>Example Page</title>
                     <meta name="description" content="Example description">
+                    <meta name="viewport" content="width=device-width, initial-scale=1">
+                    <link rel="canonical" href="/page">
                 </head>
                 <body>
                     <h1>Main heading</h1>

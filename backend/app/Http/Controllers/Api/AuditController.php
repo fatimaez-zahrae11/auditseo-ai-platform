@@ -58,8 +58,8 @@ class AuditController extends Controller
         ], 201);
     }
 
-    # index() & show() ces 2 fcts gardent la protection IDOR:
-    # retourner seulement les audits de l’utilisateur connecte
+    // index() & show() ces 2 fcts gardent la protection IDOR:
+    // retourner seulement les audits de l’utilisateur connecte
     public function index(Request $request): JsonResponse
     {
         $audits = Audit::query()
@@ -73,7 +73,7 @@ class AuditController extends Controller
         ]);
     }
 
-    # meme logique ; donc si user A essaie de voir laudit de l'utilisateur B ? laravel return 404 error C la protection IDOR 
+    // meme logique ; donc si user A essaie de voir laudit de l'utilisateur B ? laravel return 404 error C la protection IDOR
     public function show(Request $request, int $id): JsonResponse
     {
         $audit = Audit::query()
@@ -87,9 +87,9 @@ class AuditController extends Controller
     }
 
     /**
-     * @param array<string, bool|int|string|null> $data
+     * @param  array<string, bool|int|string|null>  $data
      */
-    # cette fonction transforme les donnees extraite ne problemes SEO 
+    // cette fonction transforme les donnees extraite ne problemes SEO
     private function createIssues(Audit $audit, array $data): void
     {
         $issues = [];
@@ -106,6 +106,10 @@ class AuditController extends Controller
             $issues[] = $this->issue('content', 'Missing H1 heading', 'important', 'Add one clear H1 heading.');
         } elseif ($data['h1_count'] > 1) {
             $issues[] = $this->issue('content', 'Multiple H1 headings', 'minor', 'Use one primary H1 heading.');
+        }
+
+        if ($data['h2_count'] === 0) {
+            $issues[] = $this->issue('content', 'Missing H2 heading', 'minor', 'Add descriptive H2 headings to structure the page content.');
         }
 
         if ($data['images_missing_alt_count'] > 0) {
@@ -138,6 +142,48 @@ class AuditController extends Controller
                 'important',
                 'Add a sitemap.xml file at the root of the website.',
             );
+        }
+
+        if ($data['http_status_code'] !== 200) {
+            $issues[] = $this->issue(
+                'technical',
+                'Page does not return HTTP 200',
+                'critical',
+                'Make the final page return an HTTP 200 status code.',
+                "The final response returned HTTP {$data['http_status_code']}.",
+            );
+        }
+
+        if ($data['redirect_count'] > 1) {
+            $issues[] = $this->issue(
+                'technical',
+                'Page has a redirect chain',
+                'minor',
+                'Link directly to the final URL and reduce the redirect chain to one hop or fewer.',
+                "The page redirected {$data['redirect_count']} times.",
+            );
+        }
+
+        if ($data['canonical_url'] === null) {
+            $issues[] = $this->issue('indexability', 'Missing canonical tag', 'important', 'Add a self-referencing canonical link to the page head.');
+        } elseif (! $data['canonical_matches_final_url']) {
+            $issues[] = $this->issue('indexability', 'Canonical URL does not match final URL', 'important', 'Use the preferred final URL in the canonical link.');
+        }
+
+        $metaRobots = strtolower((string) ($data['meta_robots'] ?? ''));
+        if (preg_match('/(?:^|[\s,])noindex(?:[\s,]|$)/', $metaRobots)) {
+            $issues[] = $this->issue('indexability', 'Page is marked noindex', 'critical', 'Remove the noindex directive if this page should appear in search results.');
+        }
+        if (preg_match('/(?:^|[\s,])nofollow(?:[\s,]|$)/', $metaRobots)) {
+            $issues[] = $this->issue('indexability', 'Page is marked nofollow', 'important', 'Remove the nofollow directive if search engines should follow links on this page.');
+        }
+
+        if ($data['html_lang'] === null) {
+            $issues[] = $this->issue('accessibility', 'Missing HTML lang attribute', 'minor', 'Set the page language on the html element.');
+        }
+
+        if (! $data['viewport_found']) {
+            $issues[] = $this->issue('technical', 'Missing meta viewport', 'important', 'Add a responsive meta viewport tag to the page head.');
         }
 
         if ($issues !== []) {
