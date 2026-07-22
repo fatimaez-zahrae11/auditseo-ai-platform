@@ -130,6 +130,12 @@ class SeoScoringService
             $technicalScore -= 5;
         }
 
+        if (array_key_exists('structured_data_found', $data) && ! $data['structured_data_found']) {
+            $technicalScore -= 5;
+        }
+
+        $technicalScore -= min(30, ((int) ($data['structured_data_errors_count'] ?? 0)) * 15);
+
         if ($data['links_count'] === 0) {
             $linksScore -= 30;
         }

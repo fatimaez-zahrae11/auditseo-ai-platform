@@ -770,7 +770,8 @@ class AuditApiTest extends TestCase
             'body' => $this->crawlerPageHtml(
                 'Same Internal Page Title',
                 'A unique meta description for the same internal page used by crawler deduplication tests.',
-                '<h1>Same Internal Page</h1><h2>Section</h2><p>'.str_repeat('same content ', 300).'</p>',
+                '<h1>Same Internal Page</h1><h2>Section</h2><p>'.str_repeat('same content ', 300).'</p>'
+                    .'<script type="application/ld+json">{"@type":"Product"}</script>',
             ),
             'status' => 200,
         ];
@@ -787,7 +788,9 @@ class AuditApiTest extends TestCase
             ->assertJsonPath('raw_data.crawled_pages.1.title', 'Same Internal Page Title')
             ->assertJsonPath('raw_data.crawled_pages.1.meta_description', 'A unique meta description for the same internal page used by crawler deduplication tests.')
             ->assertJsonPath('raw_data.crawled_pages.1.h1', 'Same Internal Page')
-            ->assertJsonPath('raw_data.crawled_pages.1.is_indexable', true);
+            ->assertJsonPath('raw_data.crawled_pages.1.is_indexable', true)
+            ->assertJsonPath('raw_data.crawled_pages.1.structured_data_found', true)
+            ->assertJsonPath('raw_data.crawled_pages.1.schema_types', ['Product']);
 
         $this->assertGreaterThanOrEqual(300, $response->json('raw_data.crawled_pages.1.word_count'));
         $this->assertIsInt($response->json('raw_data.crawled_pages.1.response_time_ms'));
@@ -1022,7 +1025,7 @@ class AuditApiTest extends TestCase
 
     public function test_global_score_is_the_rounded_average_of_category_scores(): void
     {
-        $this->responseHtml = '<html lang="en"><head><link rel="canonical" href="/page"><meta name="viewport" content="width=device-width"><meta name="description" content="Present"></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
+        $this->responseHtml = '<html lang="en"><head><link rel="canonical" href="/page"><meta name="viewport" content="width=device-width"><meta name="description" content="Present"><script type="application/ld+json">{"@type":"WebPage"}</script></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
         Sanctum::actingAs(User::factory()->create());
 
         $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
@@ -1069,6 +1072,175 @@ class AuditApiTest extends TestCase
             'title' => 'Images missing alt text',
             'description' => '2 image(s) are missing alt text.',
         ]);
+    }
+
+    public function test_json_ld_objects_arrays_and_graph_types_are_detected(): void
+    {
+        $this->responseHtml = $this->contentHtml(
+            'Structured Data Analysis Page Title',
+            'A descriptive meta description for the structured data JSON-LD analysis test page.',
+            <<<'HTML'
+                <h1>Structured Data Analysis</h1><h2>Details</h2>
+                <script type="application/ld+json">
+                    {"@context":"https://schema.org","@type":"Organization"}
+                </script>
+                <script type="application/ld+json">
+                    [
+                        {"@type":"WebSite"},
+                        {"@graph":[{"@type":"BreadcrumbList"},{"@type":["Article","Person"]}]}
+                    ]
+                </script>
+                HTML,
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.structured_data_found', true)
+            ->assertJsonPath('raw_data.structured_data_formats', ['json_ld'])
+            ->assertJsonPath('raw_data.json_ld_count', 2)
+            ->assertJsonPath('raw_data.schema_types', [
+                'Organization',
+                'WebSite',
+                'BreadcrumbList',
+                'Article',
+                'Person',
+            ])
+            ->assertJsonPath('raw_data.important_schema_types_found', [
+                'Organization',
+                'WebSite',
+                'BreadcrumbList',
+                'Article',
+                'Person',
+            ])
+            ->assertJsonPath('raw_data.structured_data_errors_count', 0)
+            ->assertJsonPath('raw_data.structured_data_errors_sample', []);
+    }
+
+    public function test_invalid_json_ld_creates_an_important_structured_data_issue(): void
+    {
+        $this->responseHtml = $this->contentHtml(
+            'Invalid Structured Data Page Title',
+            'A descriptive meta description for a page containing an invalid JSON-LD data block.',
+            '<h1>Invalid Structured Data</h1><h2>Details</h2>'
+                .str_repeat('<script type="application/ld+json">{"@type":</script>', 7),
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.structured_data_found', true)
+            ->assertJsonPath('raw_data.json_ld_count', 7)
+            ->assertJsonPath('raw_data.structured_data_errors_count', 7)
+            ->assertJsonCount(5, 'raw_data.structured_data_errors_sample')
+            ->assertJsonFragment([
+                'title' => 'Invalid JSON-LD found',
+                'category' => 'structured_data',
+                'severity' => 'important',
+            ]);
+        $this->assertLessThan(100, $response->json('audit.technical_score'));
+    }
+
+    public function test_microdata_and_rdfa_types_are_detected(): void
+    {
+        $this->responseHtml = $this->contentHtml(
+            'Microdata and RDFa Analysis Page',
+            'A descriptive meta description for the combined Microdata and RDFa structured data test.',
+            <<<'HTML'
+                <h1>Structured Data Formats</h1><h2>Details</h2>
+                <div itemscope itemtype="https://schema.org/Product"><span itemprop="name">Product</span></div>
+                <div vocab="https://schema.org/" typeof="Person"><span property="name">Person</span></div>
+                HTML,
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.structured_data_found', true)
+            ->assertJsonPath('raw_data.structured_data_formats', ['microdata', 'rdfa'])
+            ->assertJsonPath('raw_data.microdata_found', true)
+            ->assertJsonPath('raw_data.rdfa_found', true)
+            ->assertJsonPath('raw_data.schema_types', ['Product', 'Person']);
+    }
+
+    public function test_no_structured_data_creates_a_minor_issue(): void
+    {
+        $this->responseHtml = $this->contentHtml(
+            'Page Without Structured Data',
+            'A descriptive meta description for a page that intentionally has no structured data markup.',
+            '<h1>No Structured Data</h1><h2>Details</h2>',
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.structured_data_found', false)
+            ->assertJsonPath('raw_data.structured_data_formats', [])
+            ->assertJsonPath('raw_data.schema_types', [])
+            ->assertJsonFragment([
+                'title' => 'No structured data found',
+                'category' => 'structured_data',
+                'severity' => 'minor',
+            ]);
+        $this->assertLessThan(100, $response->json('audit.technical_score'));
+    }
+
+    public function test_homepage_recommends_missing_organization_and_website_schema(): void
+    {
+        $this->responseHtml = $this->contentHtml(
+            'Homepage Without Recommended Schema',
+            'A descriptive homepage meta description without Organization or WebSite structured data.',
+            '<h1>Homepage</h1><h2>Welcome</h2>',
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.recommended_schema_types_missing', ['Organization', 'WebSite'])
+            ->assertJsonFragment([
+                'title' => 'Recommended schema types are missing',
+                'category' => 'structured_data',
+                'severity' => 'minor',
+            ]);
+    }
+
+    public function test_breadcrumb_navigation_without_breadcrumb_schema_creates_an_issue(): void
+    {
+        $this->responseHtml = $this->contentHtml(
+            'Page With Breadcrumb Navigation',
+            'A descriptive meta description for a page with visible breadcrumb navigation markup.',
+            '<nav aria-label="Breadcrumb"><a href="/">Home</a> / Page</nav><h1>Page</h1><h2>Details</h2>',
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.recommended_schema_types_missing', ['BreadcrumbList'])
+            ->assertJsonFragment([
+                'title' => 'Breadcrumb navigation lacks BreadcrumbList schema',
+                'category' => 'structured_data',
+                'severity' => 'minor',
+            ]);
+    }
+
+    public function test_article_like_content_recommends_article_schema(): void
+    {
+        $this->responseHtml = $this->contentHtml(
+            'Article Without Structured Data',
+            'A descriptive meta description for an article page that does not yet include Article schema.',
+            '<article><h1>SEO Guide</h1><h2>Details</h2><p>Article content.</p></article>',
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/blog/seo-guide'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.recommended_schema_types_missing', ['Article']);
     }
 
     public function test_technical_seo_v2_fields_are_extracted_and_stored(): void
@@ -1411,6 +1583,9 @@ class AuditApiTest extends TestCase
                     <meta name="description" content="Example description">
                     <meta name="viewport" content="width=device-width, initial-scale=1">
                     <link rel="canonical" href="/page">
+                    <script type="application/ld+json">
+                        {"@context":"https://schema.org","@type":"Organization","name":"AuditSEO"}
+                    </script>
                 </head>
                 <body>
                     <h1>Main heading</h1>

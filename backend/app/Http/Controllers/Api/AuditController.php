@@ -193,6 +193,45 @@ class AuditController extends Controller
             );
         }
 
+        if (! ($data['structured_data_found'] ?? false)) {
+            $issues[] = $this->issue(
+                'structured_data',
+                'No structured data found',
+                'minor',
+                'Add relevant Schema.org structured data using valid JSON-LD where appropriate.',
+            );
+        }
+
+        if (($data['structured_data_errors_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'structured_data',
+                'Invalid JSON-LD found',
+                'important',
+                'Correct invalid JSON-LD syntax and ensure each block contains an object or array.',
+                "{$data['structured_data_errors_count']} invalid JSON-LD block(s) were found.",
+            );
+        }
+
+        $missingSchemaTypes = $data['recommended_schema_types_missing'] ?? [];
+        if ($missingSchemaTypes !== []) {
+            $issues[] = $this->issue(
+                'structured_data',
+                'Recommended schema types are missing',
+                'minor',
+                'Add the recommended Schema.org types when they accurately describe the page.',
+                'Missing recommended types: '.implode(', ', $missingSchemaTypes).'.',
+            );
+        }
+
+        if (in_array('BreadcrumbList', $missingSchemaTypes, true)) {
+            $issues[] = $this->issue(
+                'structured_data',
+                'Breadcrumb navigation lacks BreadcrumbList schema',
+                'minor',
+                'Describe the visible breadcrumb trail with BreadcrumbList structured data.',
+            );
+        }
+
         if (! $data['uses_https']) {
             $issues[] = $this->issue('technical', 'Page does not use HTTPS', 'critical', 'Serve the page over HTTPS.');
         }

@@ -9,6 +9,7 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Validation\ValidationException;
+use JsonException;
 use RuntimeException;
 
 class SeoCrawlerService
@@ -34,6 +35,20 @@ class SeoCrawlerService
     private const MAX_CRAWL_DEPTH = 2;
 
     private const MAX_CRAWL_REDIRECTS = 3;
+
+    private const MAX_STRUCTURED_DATA_ERRORS_SAMPLE = 5;
+
+    private const IMPORTANT_SCHEMA_TYPES = [
+        'Organization',
+        'WebSite',
+        'BreadcrumbList',
+        'Article',
+        'BlogPosting',
+        'Product',
+        'FAQPage',
+        'LocalBusiness',
+        'Person',
+    ];
 
     private const GENERIC_ANCHOR_TEXTS = [
         'click here',
@@ -569,7 +584,7 @@ class SeoCrawlerService
 
     /**
      * @param  array<string, mixed>  $data
-     * @return array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool, response_time_ms: int, page_size_bytes: int}
+     * @return array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool, response_time_ms: int, page_size_bytes: int, structured_data_found: bool, schema_types: array<int, string>}
      */
     private function compactCrawledPage(string $url, int $statusCode, int $depth, array $data): array
     {
@@ -584,11 +599,13 @@ class SeoCrawlerService
             'is_indexable' => (bool) $data['is_indexable'],
             'response_time_ms' => max(0, (int) ($data['response_time_ms'] ?? 0)),
             'page_size_bytes' => max(0, (int) ($data['page_size_bytes'] ?? 0)),
+            'structured_data_found' => (bool) ($data['structured_data_found'] ?? false),
+            'schema_types' => array_values($data['schema_types'] ?? []),
         ];
     }
 
     /**
-     * @param  array<int, array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool, response_time_ms: int, page_size_bytes: int}>  $pages
+     * @param  array<int, array{url: string, status_code: int, depth: int, title: ?string, meta_description: ?string, h1: ?string, word_count: int, is_indexable: bool, response_time_ms: int, page_size_bytes: int, structured_data_found: bool, schema_types: array<int, string>}>  $pages
      * @return array<string, int>
      */
     private function summarizeCrawledPages(array $pages): array
@@ -804,6 +821,7 @@ class SeoCrawlerService
         $wordCount = $this->countWords($visibleText);
         $imagesCount = $images->length;
         $imagesMissingAltCount = $imagesMissingAlt->length;
+        $structuredData = $this->analyzeStructuredData($xpath, $url);
 
         return [
             'title' => $title !== '' ? $title : null,
@@ -837,8 +855,196 @@ class SeoCrawlerService
                 : 0.0,
             'links_count' => $links->length,
             ...$linkData,
+            ...$structuredData,
             'uses_https' => strtolower((string) parse_url($url, PHP_URL_SCHEME)) === 'https',
         ];
+    }
+
+    /**
+     * @return array{structured_data_found: bool, structured_data_formats: array<int, string>, json_ld_count: int, microdata_found: bool, rdfa_found: bool, schema_types: array<int, string>, structured_data_errors_count: int, structured_data_errors_sample: array<int, string>, important_schema_types_found: array<int, string>, recommended_schema_types_missing: array<int, string>}
+     */
+    private function analyzeStructuredData(DOMXPath $xpath, string $url): array
+    {
+        $formats = [];
+        $schemaTypes = [];
+        $errors = [];
+        $errorsCount = 0;
+        $jsonLdBlocks = $xpath->query(
+            "//script[translate(normalize-space(@type), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz') = 'application/ld+json']",
+        );
+
+        if ($jsonLdBlocks->length > 0) {
+            $formats[] = 'json_ld';
+        }
+
+        foreach ($jsonLdBlocks as $index => $block) {
+            $json = trim((string) $block->textContent);
+
+            try {
+                $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+                if (! is_array($decoded)) {
+                    throw new JsonException('The top-level value must be an object or array.');
+                }
+
+                $this->collectJsonLdTypes($decoded, $schemaTypes);
+            } catch (JsonException $exception) {
+                $errorsCount++;
+                if (count($errors) < self::MAX_STRUCTURED_DATA_ERRORS_SAMPLE) {
+                    $errors[] = 'JSON-LD block '.($index + 1).': '.$exception->getMessage();
+                }
+            }
+        }
+
+        $microdataNodes = $xpath->query('//*[@itemscope or @itemtype or @itemprop]');
+        $microdataFound = $microdataNodes->length > 0;
+        if ($microdataFound) {
+            $formats[] = 'microdata';
+            foreach ($xpath->query('//*[@itemtype]') as $node) {
+                foreach (preg_split('/\s+/', trim((string) $node->attributes?->getNamedItem('itemtype')?->nodeValue)) ?: [] as $type) {
+                    $this->addSchemaType($schemaTypes, $type);
+                }
+            }
+        }
+
+        $rdfaNodes = $xpath->query('//*[@vocab or @typeof or @property]');
+        $rdfaFound = $rdfaNodes->length > 0;
+        if ($rdfaFound) {
+            $formats[] = 'rdfa';
+            foreach ($xpath->query('//*[@typeof]') as $node) {
+                foreach (preg_split('/\s+/', trim((string) $node->attributes?->getNamedItem('typeof')?->nodeValue)) ?: [] as $type) {
+                    $this->addSchemaType($schemaTypes, $type);
+                }
+            }
+        }
+
+        $schemaTypes = array_values($schemaTypes);
+        $importantTypes = array_values(array_filter(
+            self::IMPORTANT_SCHEMA_TYPES,
+            fn (string $type): bool => $this->hasSchemaType($schemaTypes, $type),
+        ));
+        $recommended = [];
+
+        if ($this->isHomepageLikeUrl($url)) {
+            foreach (['Organization', 'WebSite'] as $type) {
+                if (! $this->hasSchemaType($schemaTypes, $type)) {
+                    $recommended[] = $type;
+                }
+            }
+        }
+
+        if ($this->breadcrumbNavigationFound($xpath)
+            && ! $this->hasSchemaType($schemaTypes, 'BreadcrumbList')) {
+            $recommended[] = 'BreadcrumbList';
+        }
+
+        if ($this->articleLikeContentFound($xpath, $url)
+            && ! $this->hasSchemaType($schemaTypes, 'Article')
+            && ! $this->hasSchemaType($schemaTypes, 'BlogPosting')) {
+            $recommended[] = 'Article';
+        }
+
+        return [
+            'structured_data_found' => $formats !== [],
+            'structured_data_formats' => $formats,
+            'json_ld_count' => $jsonLdBlocks->length,
+            'microdata_found' => $microdataFound,
+            'rdfa_found' => $rdfaFound,
+            'schema_types' => $schemaTypes,
+            'structured_data_errors_count' => $errorsCount,
+            'structured_data_errors_sample' => $errors,
+            'important_schema_types_found' => $importantTypes,
+            'recommended_schema_types_missing' => array_values(array_unique($recommended)),
+        ];
+    }
+
+    /**
+     * @param  array<string|int, mixed>  $node
+     * @param  array<string, string>  $types
+     */
+    private function collectJsonLdTypes(array $node, array &$types): void
+    {
+        if (array_key_exists('@type', $node)) {
+            foreach ((array) $node['@type'] as $type) {
+                if (is_string($type)) {
+                    $this->addSchemaType($types, $type);
+                }
+            }
+        }
+
+        foreach ($node as $value) {
+            if (is_array($value)) {
+                $this->collectJsonLdTypes($value, $types);
+            }
+        }
+    }
+
+    /**
+     * @param  array<string, string>  $types
+     */
+    private function addSchemaType(array &$types, string $type): void
+    {
+        $type = trim($type);
+        if ($type === '') {
+            return;
+        }
+
+        $normalized = preg_replace('~^.*[/#:](?=[^/#:]+$)~', '', $type) ?? $type;
+        foreach (self::IMPORTANT_SCHEMA_TYPES as $importantType) {
+            if (strcasecmp($normalized, $importantType) === 0) {
+                $normalized = $importantType;
+                break;
+            }
+        }
+
+        $types[strtolower($normalized)] ??= $normalized;
+    }
+
+    /**
+     * @param  array<int, string>  $types
+     */
+    private function hasSchemaType(array $types, string $expected): bool
+    {
+        foreach ($types as $type) {
+            if (strcasecmp($type, $expected) === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isHomepageLikeUrl(string $url): bool
+    {
+        $path = strtolower(rtrim((string) parse_url($url, PHP_URL_PATH), '/'));
+
+        return in_array($path, ['', '/index.html', '/index.htm', '/index.php', '/home'], true);
+    }
+
+    private function breadcrumbNavigationFound(DOMXPath $xpath): bool
+    {
+        return $xpath->query(
+            "//*[contains(translate(@class, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'breadcrumb')"
+            ." or contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'breadcrumb')"
+            ." or (self::nav and contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'breadcrumb'))]",
+        )->length > 0;
+    }
+
+    private function articleLikeContentFound(DOMXPath $xpath, string $url): bool
+    {
+        if ($xpath->query('//article')->length > 0) {
+            return true;
+        }
+
+        $openGraphType = strtolower(trim((string) $xpath->evaluate(
+            "string(//meta[translate(@property, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz') = 'og:type'][1]/@content)",
+        )));
+        if ($openGraphType === 'article') {
+            return true;
+        }
+
+        $path = strtolower((string) parse_url($url, PHP_URL_PATH));
+
+        return preg_match('#/(?:blog|articles?|news|posts?)(?:/|$)#', $path) === 1;
     }
 
     /**

@@ -137,6 +137,24 @@ class SeoScoringServiceTest extends TestCase
         }
     }
 
+    public function test_structured_data_problems_reduce_and_clamp_the_technical_score(): void
+    {
+        $service = new SeoScoringService;
+        $healthyScores = $service->calculate($this->completeData());
+        $weakScores = $service->calculate([
+            ...$this->completeData(),
+            'structured_data_found' => false,
+            'structured_data_errors_count' => 10,
+        ]);
+
+        $this->assertSame(100, $healthyScores['technical_score']);
+        $this->assertSame(65, $weakScores['technical_score']);
+        foreach ($weakScores as $score) {
+            $this->assertGreaterThanOrEqual(0, $score);
+            $this->assertLessThanOrEqual(100, $score);
+        }
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -186,6 +204,8 @@ class SeoScoringServiceTest extends TestCase
             'is_html_response' => true,
             'compression_enabled' => true,
             'cache_headers_present' => true,
+            'structured_data_found' => true,
+            'structured_data_errors_count' => 0,
         ];
     }
 }
