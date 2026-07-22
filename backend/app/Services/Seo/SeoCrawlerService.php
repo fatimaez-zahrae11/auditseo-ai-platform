@@ -15,8 +15,22 @@ class SeoCrawlerService
 {
     private const MAX_REDIRECTS = 10;
 
+    private const MAX_CHECKED_LINKS = 25;
+
+    private const MAX_BROKEN_LINKS_SAMPLE = 5;
+
+    private const GENERIC_ANCHOR_TEXTS = [
+        'click here',
+        'here',
+        'read more',
+        'learn more',
+        'more',
+        'voir plus',
+        'cliquez ici',
+    ];
+
     /**
-     * @return array<string, bool|int|string|null>
+     * @return array<string, mixed>
      */
     public function crawl(string $url): array
     {
@@ -39,6 +53,10 @@ class SeoCrawlerService
         $origin = $this->origin($finalUrl);
         $data['robots_txt_found'] = $this->resourceExists("{$origin}/robots.txt");
         $data['sitemap_xml_found'] = $this->resourceExists("{$origin}/sitemap.xml");
+
+        $linkCheckData = $this->checkLinks($data['checkable_links']);
+        unset($data['checkable_links']);
+        $data = [...$data, ...$linkCheckData];
 
         return $data;
     }
@@ -78,6 +96,14 @@ class SeoCrawlerService
     {
         return Http::timeout(10)
             ->connectTimeout(5)
+            ->withUserAgent('AuditSEO-Crawler/2.0')
+            ->withOptions(['allow_redirects' => false]);
+    }
+
+    private function linkCheckHttpClient(): PendingRequest
+    {
+        return Http::timeout(3)
+            ->connectTimeout(2)
             ->withUserAgent('AuditSEO-Crawler/2.0')
             ->withOptions(['allow_redirects' => false]);
     }
@@ -160,7 +186,7 @@ class SeoCrawlerService
     }
 
     /**
-     * @return array<string, bool|int|string|null>
+     * @return array<string, mixed>
      */
     private function extractSeoData(string $html, string $url): array
     {
@@ -185,6 +211,8 @@ class SeoCrawlerService
         $robotsDirectives = strtolower($metaRobots);
         $images = $xpath->query('//img');
         $imagesMissingAlt = $xpath->query('//img[not(@alt) or normalize-space(@alt) = ""]');
+        $links = $xpath->query('//a[@href]');
+        $linkData = $this->analyzeLinks($links, $url);
 
         return [
             'title' => $title !== '' ? $title : null,
@@ -207,9 +235,164 @@ class SeoCrawlerService
             'h6_count' => $xpath->query('//h6')->length,
             'images_count' => $images->length,
             'images_missing_alt_count' => $imagesMissingAlt->length,
-            'links_count' => $xpath->query('//a[@href]')->length,
+            'links_count' => $links->length,
+            ...$linkData,
             'uses_https' => strtolower((string) parse_url($url, PHP_URL_SCHEME)) === 'https',
         ];
+    }
+
+    /**
+     * @return array{internal_links_count: int, external_links_count: int, nofollow_links_count: int, empty_anchor_links_count: int, generic_anchor_links_count: int, checkable_links: array<int, string>}
+     */
+    private function analyzeLinks(\DOMNodeList $links, string $finalUrl): array
+    {
+        $internalCount = 0;
+        $externalCount = 0;
+        $nofollowCount = 0;
+        $emptyAnchorCount = 0;
+        $genericAnchorCount = 0;
+        $checkableLinks = [];
+        $finalHost = strtolower((string) parse_url($finalUrl, PHP_URL_HOST));
+
+        foreach ($links as $link) {
+            $href = trim((string) $link->attributes?->getNamedItem('href')?->nodeValue);
+            $anchorText = preg_replace('/\s+/u', ' ', (string) $link->textContent) ?? '';
+            $anchorText = trim($anchorText);
+
+            if ($anchorText === '') {
+                $emptyAnchorCount++;
+            } elseif (in_array(strtolower($anchorText), self::GENERIC_ANCHOR_TEXTS, true)) {
+                $genericAnchorCount++;
+            }
+
+            $rel = strtolower((string) $link->attributes?->getNamedItem('rel')?->nodeValue);
+            if (preg_match('/(?:^|\s)nofollow(?:\s|$)/', $rel)) {
+                $nofollowCount++;
+            }
+
+            $resolvedUrl = $this->resolveCheckableHttpUrl($finalUrl, $href);
+            if ($resolvedUrl === null) {
+                continue;
+            }
+
+            $linkHost = strtolower((string) parse_url($resolvedUrl, PHP_URL_HOST));
+            if ($linkHost === $finalHost) {
+                $internalCount++;
+            } else {
+                $externalCount++;
+            }
+
+            $checkableLinks[$this->normalizeUrl($resolvedUrl)] = $resolvedUrl;
+        }
+
+        return [
+            'internal_links_count' => $internalCount,
+            'external_links_count' => $externalCount,
+            'nofollow_links_count' => $nofollowCount,
+            'empty_anchor_links_count' => $emptyAnchorCount,
+            'generic_anchor_links_count' => $genericAnchorCount,
+            'checkable_links' => array_values($checkableLinks),
+        ];
+    }
+
+    private function resolveCheckableHttpUrl(string $baseUrl, string $href): ?string
+    {
+        if ($href === '' || str_starts_with($href, '#')) {
+            return null;
+        }
+
+        $referenceScheme = strtolower((string) parse_url($href, PHP_URL_SCHEME));
+        if ($referenceScheme !== '' && ! in_array($referenceScheme, ['http', 'https'], true)) {
+            return null;
+        }
+
+        $resolvedUrl = $this->resolveUrl($baseUrl, $href);
+        $parts = parse_url($resolvedUrl);
+        if ($parts === false
+            || ! in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)
+            || ($parts['host'] ?? '') === ''
+            || filter_var($resolvedUrl, FILTER_VALIDATE_URL) === false) {
+            return null;
+        }
+
+        $fragmentPosition = strpos($resolvedUrl, '#');
+
+        return $fragmentPosition === false ? $resolvedUrl : substr($resolvedUrl, 0, $fragmentPosition);
+    }
+
+    /**
+     * @param  array<int, string>  $links
+     * @return array{checked_links_count: int, broken_links_count: int, broken_links_sample: array<int, string>}
+     */
+    private function checkLinks(array $links): array
+    {
+        $checkedCount = 0;
+        $brokenCount = 0;
+        $brokenSample = [];
+
+        foreach (array_slice($links, 0, self::MAX_CHECKED_LINKS) as $link) {
+            try {
+                $this->ensureUrlIsSafe($link);
+                $response = $this->fetchLink($link);
+            } catch (ValidationException) {
+                // A page cannot make the crawler request an unsafe link target.
+                continue;
+            } catch (ConnectionException|RuntimeException) {
+                $checkedCount++;
+                $brokenCount++;
+                if (count($brokenSample) < self::MAX_BROKEN_LINKS_SAMPLE) {
+                    $brokenSample[] = $link;
+                }
+
+                continue;
+            }
+
+            $checkedCount++;
+            if ($response->status() >= 400) {
+                $brokenCount++;
+                if (count($brokenSample) < self::MAX_BROKEN_LINKS_SAMPLE) {
+                    $brokenSample[] = $link;
+                }
+            }
+        }
+
+        return [
+            'checked_links_count' => $checkedCount,
+            'broken_links_count' => $brokenCount,
+            'broken_links_sample' => $brokenSample,
+        ];
+    }
+
+    private function fetchLink(string $url): Response
+    {
+        $currentUrl = $url;
+        $redirectCount = 0;
+
+        while (true) {
+            $this->ensureUrlIsSafe($currentUrl);
+            $response = $this->linkCheckHttpClient()->get($currentUrl);
+
+            if (! $this->isRedirect($response)) {
+                return $response;
+            }
+
+            $location = trim((string) $response->header('Location'));
+            if ($location === '') {
+                return $response;
+            }
+
+            if ($redirectCount >= self::MAX_REDIRECTS) {
+                throw new RuntimeException('The link exceeded the redirect limit.');
+            }
+
+            $redirectUrl = $this->resolveCheckableHttpUrl($currentUrl, $location);
+            if ($redirectUrl === null) {
+                return $response;
+            }
+
+            $currentUrl = $redirectUrl;
+            $redirectCount++;
+        }
     }
 
     private function nullableTrimmed(string $value): ?string

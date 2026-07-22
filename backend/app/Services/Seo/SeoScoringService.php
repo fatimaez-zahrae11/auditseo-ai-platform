@@ -81,6 +81,10 @@ class SeoScoringService
             $linksScore -= 30;
         }
 
+        $linksScore -= min(60, ((int) ($data['broken_links_count'] ?? 0)) * 15);
+        $linksScore -= min(15, ((int) ($data['empty_anchor_links_count'] ?? 0)) * 3);
+        $linksScore -= min(15, ((int) ($data['generic_anchor_links_count'] ?? 0)) * 3);
+
         if (($data['response_time_ms'] ?? 0) > 2000) {
             $performanceScore -= 20;
         } elseif (($data['response_time_ms'] ?? 0) > 1000) {

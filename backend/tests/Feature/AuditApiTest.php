@@ -24,6 +24,11 @@ class AuditApiTest extends TestCase
     private int $pageStatus;
 
     /**
+     * @var array<string, int>
+     */
+    private array $linkStatuses;
+
+    /**
      * @var array<string, array{status: int, location: string}>
      */
     private array $redirects;
@@ -37,6 +42,7 @@ class AuditApiTest extends TestCase
         $this->sitemapStatus = 200;
         $this->pageStatus = 200;
         $this->redirects = [];
+        $this->linkStatuses = [];
 
         Http::fake(function (Request $request) {
             if (isset($this->redirects[$request->url()])) {
@@ -51,6 +57,10 @@ class AuditApiTest extends TestCase
 
             if (str_ends_with($request->url(), '/sitemap.xml')) {
                 return Http::response('<urlset></urlset>', $this->sitemapStatus);
+            }
+
+            if (isset($this->linkStatuses[$request->url()])) {
+                return Http::response('', $this->linkStatuses[$request->url()]);
             }
 
             return Http::response($this->responseHtml, $this->pageStatus, ['Content-Type' => 'text/html']);
@@ -100,7 +110,7 @@ class AuditApiTest extends TestCase
             'performance_score' => 100,
         ]);
         $this->assertSame('Example Page', Audit::findOrFail($response->json('audit.id'))->raw_data['title']);
-        Http::assertSentCount(3);
+        Http::assertSentCount(4);
     }
 
     public function test_robots_txt_and_sitemap_xml_availability_are_stored_in_raw_data(): void
@@ -168,6 +178,130 @@ class AuditApiTest extends TestCase
             ->assertJsonPath('raw_data.images_missing_alt_count', 0)
             ->assertJsonPath('raw_data.links_count', 1)
             ->assertJsonPath('raw_data.uses_https', true);
+    }
+
+    public function test_link_seo_v2_classifies_internal_external_and_nofollow_links(): void
+    {
+        $this->responseHtml = $this->htmlWithLinks(<<<'HTML'
+            <a href="/internal">Internal</a>
+            <a href="https://example.org/external" rel="ugc NOFOLLOW">External</a>
+            HTML);
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.links_count', 2)
+            ->assertJsonPath('raw_data.internal_links_count', 1)
+            ->assertJsonPath('raw_data.external_links_count', 1)
+            ->assertJsonPath('raw_data.nofollow_links_count', 1)
+            ->assertJsonPath('raw_data.checked_links_count', 2)
+            ->assertJsonPath('raw_data.broken_links_count', 0)
+            ->assertJsonPath('raw_data.broken_links_sample', []);
+    }
+
+    public function test_empty_and_generic_anchor_links_create_minor_issues(): void
+    {
+        $this->responseHtml = $this->htmlWithLinks(<<<'HTML'
+            <a href="/empty">   </a>
+            <a href="/generic"><span>Read more</span></a>
+            HTML);
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.empty_anchor_links_count', 1)
+            ->assertJsonPath('raw_data.generic_anchor_links_count', 1)
+            ->assertJsonFragment([
+                'title' => 'Links with empty anchor text',
+                'category' => 'links',
+                'severity' => 'minor',
+            ])
+            ->assertJsonFragment([
+                'title' => 'Links with generic anchor text',
+                'category' => 'links',
+                'severity' => 'minor',
+            ]);
+    }
+
+    public function test_broken_links_create_an_important_issue_and_reduce_the_links_score(): void
+    {
+        $this->responseHtml = $this->htmlWithLinks('<a href="/broken">Broken destination</a>');
+        $this->linkStatuses['https://example.com/broken'] = 404;
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.checked_links_count', 1)
+            ->assertJsonPath('raw_data.broken_links_count', 1)
+            ->assertJsonPath('raw_data.broken_links_sample.0', 'https://example.com/broken')
+            ->assertJsonPath('audit.links_score', 85)
+            ->assertJsonFragment([
+                'title' => 'Broken links found',
+                'category' => 'links',
+                'severity' => 'important',
+            ]);
+    }
+
+    public function test_unsupported_and_unsafe_links_are_ignored_for_broken_link_checks(): void
+    {
+        $this->responseHtml = $this->htmlWithLinks(<<<'HTML'
+            <a href="mailto:hello@example.com">Email</a>
+            <a href="tel:+33123456789">Telephone</a>
+            <a href="javascript:void(0)">Script</a>
+            <a href="#section">Jump</a>
+            <a href="http://127.0.0.1/private">Private service</a>
+            HTML);
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.links_count', 5)
+            ->assertJsonPath('raw_data.checked_links_count', 0)
+            ->assertJsonPath('raw_data.broken_links_count', 0);
+        Http::assertSentCount(3);
+        Http::assertNotSent(fn (Request $request) => str_contains($request->url(), '127.0.0.1'));
+    }
+
+    public function test_checked_links_are_deduplicated_and_limited_to_twenty_five(): void
+    {
+        $links = '<a href="/same">Same link</a><a href="/same">Same link again</a>';
+        for ($index = 1; $index <= 30; $index++) {
+            $links .= "<a href=\"/link-{$index}\">Link {$index}</a>";
+        }
+        $this->responseHtml = $this->htmlWithLinks($links);
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('raw_data.links_count', 32)
+            ->assertJsonPath('raw_data.internal_links_count', 32)
+            ->assertJsonPath('raw_data.checked_links_count', 25);
+        Http::assertSentCount(28);
+    }
+
+    public function test_a_page_without_links_creates_an_important_links_issue(): void
+    {
+        $this->responseHtml = $this->htmlWithLinks('');
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.links_count', 0)
+            ->assertJsonFragment([
+                'title' => 'No links found',
+                'category' => 'links',
+                'severity' => 'important',
+            ]);
     }
 
     public function test_missing_title_creates_an_audit_issue(): void
@@ -470,6 +604,26 @@ class AuditApiTest extends TestCase
                     <img src="one.jpg" alt="First image">
                     <img src="two.jpg" alt="Second image">
                     <a href="/about">About</a>
+                </body>
+            </html>
+            HTML;
+    }
+
+    private function htmlWithLinks(string $links): string
+    {
+        return <<<HTML
+            <!doctype html>
+            <html lang="en">
+                <head>
+                    <title>Link analysis</title>
+                    <meta name="description" content="Link analysis checks">
+                    <meta name="viewport" content="width=device-width, initial-scale=1">
+                    <link rel="canonical" href="/page">
+                </head>
+                <body>
+                    <h1>Main heading</h1>
+                    <h2>Secondary heading</h2>
+                    {$links}
                 </body>
             </html>
             HTML;

@@ -87,7 +87,7 @@ class AuditController extends Controller
     }
 
     /**
-     * @param  array<string, bool|int|string|null>  $data
+     * @param  array<string, mixed>  $data
      */
     // cette fonction transforme les donnees extraite ne problemes SEO
     private function createIssues(Audit $audit, array $data): void
@@ -184,6 +184,45 @@ class AuditController extends Controller
 
         if (! $data['viewport_found']) {
             $issues[] = $this->issue('technical', 'Missing meta viewport', 'important', 'Add a responsive meta viewport tag to the page head.');
+        }
+
+        if (($data['broken_links_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'links',
+                'Broken links found',
+                'important',
+                'Update or remove links that return an error.',
+                "{$data['broken_links_count']} checked link(s) are broken.",
+            );
+        }
+
+        if (($data['empty_anchor_links_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'links',
+                'Links with empty anchor text',
+                'minor',
+                'Add descriptive anchor text to every link.',
+                "{$data['empty_anchor_links_count']} link(s) have empty anchor text.",
+            );
+        }
+
+        if (($data['generic_anchor_links_count'] ?? 0) > 0) {
+            $issues[] = $this->issue(
+                'links',
+                'Links with generic anchor text',
+                'minor',
+                'Replace generic phrases with descriptive anchor text.',
+                "{$data['generic_anchor_links_count']} link(s) have generic anchor text.",
+            );
+        }
+
+        if ($data['links_count'] === 0) {
+            $issues[] = $this->issue(
+                'links',
+                'No links found',
+                'important',
+                'Add relevant internal links to help users and search engines navigate the site.',
+            );
         }
 
         if ($issues !== []) {

@@ -25,6 +25,24 @@ class SeoScoringServiceTest extends TestCase
         $this->assertSame(80, $largeScores['performance_score']);
     }
 
+    public function test_link_problems_reduce_and_clamp_the_links_score(): void
+    {
+        $service = new SeoScoringService;
+
+        $scores = $service->calculate([
+            ...$this->completeData(),
+            'broken_links_count' => 10,
+            'empty_anchor_links_count' => 20,
+            'generic_anchor_links_count' => 20,
+        ]);
+
+        $this->assertSame(10, $scores['links_score']);
+        foreach ($scores as $score) {
+            $this->assertGreaterThanOrEqual(0, $score);
+            $this->assertLessThanOrEqual(100, $score);
+        }
+    }
+
     /**
      * @return array<string, bool|int|string|null>
      */
