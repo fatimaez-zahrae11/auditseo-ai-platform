@@ -258,6 +258,8 @@ Request body:
 
 The URL must be valid, begin with `http://` or `https://`, and must not target an unsafe/private address.
 
+The response includes professional SEO analysis in both `audit.raw_data` and the top-level `raw_data` field. Detected audit issues are returned in both `audit.issues` and the top-level `issues` array.
+
 Successful response — `201 Created`:
 
 ```json
@@ -406,6 +408,8 @@ Common error:
 
 Returns one owned audit, including its domain and detected issues.
 
+The full professional SEO analysis is available in `audit.raw_data`. Detected audit issues are available in `audit.issues`.
+
 - **Method:** `GET`
 - **URL:** `/audits/{id}`
 - **Authentication:** Required
@@ -453,6 +457,240 @@ Common errors:
 
 - `401 Unauthorized` when authentication is missing or invalid.
 - `404 Not Found` when the audit does not exist or belongs to another user. Treat both cases the same in the frontend.
+
+## Professional SEO raw_data fields
+
+`raw_data` contains detailed evidence collected by the Laravel audit engine. Fields may be `null` or empty when a value is absent, a resource could not be fetched, or a check does not apply. Arrays are deliberately sampled and bounded to keep responses compact.
+
+### Technical SEO
+
+- `http_status_code`
+- `final_url`
+- `redirect_count`
+- `response_time_ms`
+- `page_size_bytes`
+- `canonical_url`
+- `canonical_matches_final_url`
+- `meta_robots`
+- `is_indexable`
+- `html_lang`
+- `viewport_found`
+- `h1_count`
+- `h2_count`
+- `h3_count`
+- `h4_count`
+- `h5_count`
+- `h6_count`
+
+These fields describe the final HTTP response, redirects, canonical/indexing signals, page language, responsive viewport, response timing/size, and heading counts.
+
+### Link SEO
+
+- `links_count`
+- `internal_links_count`
+- `external_links_count`
+- `nofollow_links_count`
+- `empty_anchor_links_count`
+- `generic_anchor_links_count`
+- `checked_links_count`
+- `broken_links_count`
+- `broken_links_sample`
+
+`broken_links_sample` is a small URL sample. Link checking is deliberately limited, so `checked_links_count` can be lower than `links_count`.
+
+### On-page Content SEO
+
+- `title`
+- `title_length`
+- `meta_description`
+- `meta_description_length`
+- `word_count`
+- `visible_text_sample`
+- `h1_texts`
+- `h2_texts`
+- `heading_structure`
+- `title_matches_h1`
+- `images_count`
+- `images_missing_alt_count`
+- `images_alt_missing_ratio`
+
+`heading_structure` is an ordered array such as `[{"tag":"h1","text":"Main title"}]`. `visible_text_sample` is truncated and is not the full page text.
+
+### Robots and Sitemap SEO
+
+- `robots_txt_found`
+- `robots_txt_status_code`
+- `robots_txt_allows_audited_url`
+- `robots_txt_sitemap_urls`
+- `robots_txt_disallow_rules_count`
+- `sitemap_xml_found`
+- `sitemap_xml_status_code`
+- `sitemap_xml_is_valid`
+- `sitemap_urls_count`
+- `sitemap_contains_audited_url`
+- `sitemap_https_urls_count`
+- `sitemap_non_https_urls_count`
+- `sitemap_checked_urls_count`
+- `sitemap_broken_urls_count`
+- `sitemap_broken_urls_sample`
+
+The response can also include `sitemap_urls_sample`, a bounded list used for site-wide quality details. Sitemap parsing and URL checking use safety limits.
+
+### Multi-page Crawl
+
+- `crawl_enabled`
+- `crawl_max_pages`
+- `crawl_max_depth`
+- `crawled_pages_count`
+- `discovered_internal_urls_count`
+- `crawled_pages`
+- `pages_with_http_errors_count`
+- `pages_with_missing_title_count`
+- `pages_with_missing_meta_description_count`
+- `pages_with_missing_h1_count`
+- `pages_with_noindex_count`
+- `pages_with_low_word_count_count`
+
+Each compact `crawled_pages` item can contain:
+
+```json
+{
+  "url": "https://example.com/about",
+  "status_code": 200,
+  "depth": 1,
+  "title": "About Example",
+  "meta_description": "About the Example organization.",
+  "h1": "About Example",
+  "word_count": 420,
+  "is_indexable": true,
+  "response_time_ms": 180,
+  "page_size_bytes": 24500,
+  "structured_data_found": true,
+  "schema_types": ["Organization"],
+  "canonical_url": "https://example.com/about",
+  "content_fingerprint": "4d8a3c135f01a872"
+}
+```
+
+The crawl is same-host and limit-based. These summaries do not contain full HTML or full page text.
+
+### Performance SEO
+
+- `content_type`
+- `content_encoding`
+- `compression_enabled`
+- `cache_control`
+- `cache_headers_present`
+- `server_header`
+- `html_size_kb`
+- `is_html_response`
+- `performance_warnings_count`
+
+`response_time_ms`, `page_size_bytes`, `viewport_found`, and `redirect_count` from Technical SEO are also used by performance checks.
+
+### Structured Data SEO
+
+- `structured_data_found`
+- `structured_data_formats`
+- `json_ld_count`
+- `microdata_found`
+- `rdfa_found`
+- `schema_types`
+- `structured_data_errors_count`
+- `structured_data_errors_sample`
+- `important_schema_types_found`
+- `recommended_schema_types_missing`
+
+Supported detection includes JSON-LD, Microdata, and RDFa. The API stores extracted type names and short validation errors, not complete JSON-LD documents.
+
+### Site-wide Quality
+
+- `duplicate_title_groups`
+- `duplicate_meta_description_groups`
+- `duplicate_h1_groups`
+- `duplicate_content_groups`
+- `duplicate_content_count`
+- `thin_content_pages_count`
+- `thin_content_pages_sample`
+- `canonical_conflicts_count`
+- `canonical_conflicts_sample`
+- `sitemap_orphan_urls_count`
+- `sitemap_orphan_urls_sample`
+- `site_quality_warnings_count`
+
+Title, meta-description, and H1 duplicate groups use this compact shape:
+
+```json
+{
+  "value": "Repeated page title",
+  "urls": ["https://example.com/a", "https://example.com/b"],
+  "count": 2
+}
+```
+
+Content duplicate groups replace `value` with a short `fingerprint`. Group URL samples, thin-page samples, canonical-conflict samples, and sitemap-orphan samples are limited. A thin-page sample contains `url` and `word_count`; a canonical-conflict sample contains `url` and `canonical_url`.
+
+### Audit response example
+
+This is a shortened audit creation response. The real response can contain additional model timestamps, domain data, and `raw_data` fields. Audit issue objects are serialized under `issues`.
+
+```json
+{
+  "message": "Audit created successfully.",
+  "audit": {
+    "id": 12,
+    "global_score": 82,
+    "technical_score": 88,
+    "content_score": 72,
+    "links_score": 78,
+    "performance_score": 90
+  },
+  "raw_data": {
+    "http_status_code": 200,
+    "final_url": "https://example.com/page",
+    "title": "Example Page",
+    "word_count": 240,
+    "internal_links_count": 8,
+    "broken_links_count": 1,
+    "compression_enabled": true,
+    "structured_data_found": true,
+    "schema_types": ["Organization", "WebSite"],
+    "crawled_pages_count": 4,
+    "thin_content_pages_count": 1,
+    "duplicate_content_count": 0,
+    "canonical_conflicts_count": 0
+  },
+  "issues": [
+    {
+      "category": "content",
+      "title": "Thin content pages found",
+      "severity": "important",
+      "description": "1 crawled page(s) contain fewer than 300 visible words.",
+      "recommendation": "Expand thin pages with useful, original information or consolidate pages that do not warrant separate URLs."
+    }
+  ]
+}
+```
+
+For `GET /audits/{id}`, the same scores, professional `raw_data`, and audit issue objects are nested inside `audit` as `audit.raw_data` and `audit.issues`.
+
+### Audit issue categories and severities
+
+Audit issue `category` values are:
+
+- `technical`
+- `content`
+- `links`
+- `indexability`
+- `accessibility`
+- `performance`
+- `structured_data`
+
+Audit issue `severity` values are:
+
+- `minor` — optimization or quality improvement
+- `important` — meaningful SEO problem that should be prioritized
+- `critical` — severe accessibility, indexability, technical, or performance problem
 
 ## AI recommendations
 
@@ -675,11 +913,15 @@ Keep the current audit page usable, show a retry message, and avoid tight automa
 
 ## Important frontend notes
 
-- The frontend never calls AI provider directly .
+- Display `global_score` prominently and show `technical_score`, `content_score`, `links_score`, and `performance_score` as category scores.
+- Group audit issues by `category` and optionally by `severity` for summary and detail views.
+- Use `raw_data` to build detailed tabs such as Technical SEO, Content, Links, Performance, Structured Data, Sitemap/Robots, and Crawl.
+- The frontend should call only the Laravel API. It should not call external SEO, crawling, validation, or AI services directly.
+- The frontend never calls the AI provider directly.
 - The frontend never needs or receives the AI API key.
 - Use Laravel's `POST /audits/{audit}/recommendations` endpoint to generate a recommendation.
 - Laravel stores each successfully generated recommendation.
-- Use `GET /audits/{audit}/recommendations` to retrieve stored results without spending another AI request( tokens on the API KEY ).
+- Use `GET /audits/{audit}/recommendations` to retrieve stored results without making another AI request.
 - Display the `generated_text` field from the returned recommendation object.
 - Recommendations returned by the GET endpoint are ordered newest to oldest.
 - Dashboard statistics contain only data owned by the authenticated user.
