@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Models\Audit;
 use App\Models\Domain;
 use App\Models\User;
+use App\Services\Seo\SeoCrawlerService;
+use Exception;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -162,6 +164,30 @@ class AuditApiTest extends TestCase
         ]);
         $this->assertSame('Example Page', Audit::findOrFail($response->json('audit.id'))->raw_data['title']);
         Http::assertSentCount(5);
+    }
+
+    public function test_crawler_failures_return_a_safe_json_error(): void
+    {
+        Sanctum::actingAs(User::factory()->create());
+        $crawler = $this->mock(SeoCrawlerService::class);
+        $crawler->shouldReceive('crawl')
+            ->once()
+            ->with('https://example.com/page')
+            ->andThrow(new Exception('Sensitive transport details'));
+
+        $response = $this->postJson('/api/audits', [
+            'url' => 'https://example.com/page',
+        ]);
+        $this->forgetMock(SeoCrawlerService::class);
+
+        $response
+            ->assertStatus(502)
+            ->assertExactJson([
+                'message' => 'Unable to fetch the requested URL.',
+            ]);
+
+        $this->assertStringNotContainsString('Sensitive transport details', $response->getContent());
+        $this->assertDatabaseCount('audits', 0);
     }
 
     public function test_robots_txt_and_sitemap_xml_availability_are_stored_in_raw_data(): void

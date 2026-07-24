@@ -8,13 +8,15 @@ use App\Models\Audit;
 use App\Models\Domain;
 use App\Services\Seo\SeoCrawlerService;
 use App\Services\Seo\SeoScoringService;
-use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use RuntimeException;
+use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class AuditController extends Controller
 {
+    private const AUDIT_EXECUTION_TIME_LIMIT_SECONDS = 180;
+
     public function store(
         StoreAuditRequest $request,
         SeoCrawlerService $crawler,
@@ -31,9 +33,15 @@ class AuditController extends Controller
             ['url' => $url],
         );
 
+        $this->extendExecutionTimeForAudit();
+
         try {
             $rawData = $crawler->crawl($url);
-        } catch (ConnectionException|RuntimeException $exception) {
+        } catch (ValidationException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            report($exception);
+
             return response()->json([
                 'message' => 'Unable to fetch the requested URL.',
             ], 502);
@@ -56,6 +64,17 @@ class AuditController extends Controller
             'issues' => $audit->issues,
             'raw_data' => $audit->raw_data,
         ], 201);
+    }
+
+    private function extendExecutionTimeForAudit(): void
+    {
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(self::AUDIT_EXECUTION_TIME_LIMIT_SECONDS);
+        }
+
+        if (function_exists('ini_set')) {
+            @ini_set('max_execution_time', (string) self::AUDIT_EXECUTION_TIME_LIMIT_SECONDS);
+        }
     }
 
     // index() & show() ces 2 fcts gardent la protection IDOR:
