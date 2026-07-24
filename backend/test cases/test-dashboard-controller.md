@@ -1,41 +1,30 @@
-# Dashboard Controller Test Cases
+# Dashboard Controller
 
-## Backend file/functionality tested
+## Backend part
 
-`DashboardController::index` and the authenticated dashboard statistics response.
+`DashboardController`: dashboard totals and latest audit.
 
-## Related backend files
+## Real executable test file
 
-- `app/Http/Controllers/Api/DashboardController.php`
-- `app/Models/Audit.php`
-- `app/Models/AuditIssue.php`
-- `app/Models/AiRecommendation.php`
-- `app/Models/Domain.php`
-- `routes/api.php`
+`tests/Feature/DashboardApiTest.php`
 
-## Test types covered
+## What is tested
 
-Feature Tests, Integration Tests, Security Tests, and Database Tests.
+- The dashboard requires authentication.
+- Audit, issue, and recommendation totals are returned.
+- The average score and latest audit are returned.
+- Only the authenticated user's data is included.
+- Empty dashboard values are handled.
 
-## PHPUnit test files covering it
+## Test type
 
-- `tests/Feature/DashboardApiTest.php`
+Feature, security, and database tests.
 
-## Test cases / scenarios
+## How to run
 
-| Scenario | Coverage |
-| --- | --- |
-| Access the dashboard without authentication | PHPUnit |
-| Retrieve statistics with multiple audits | PHPUnit: totals, rounded average, issue count, recommendation count, and latest audit |
-| Separate one user's data from another user's data | PHPUnit |
-| Retrieve dashboard with no audits | PHPUnit: zero totals and `null` latest audit |
-
-## Expected results
-
-- Unauthenticated access returns HTTP `401`.
-- Authenticated access returns the counts and latest audit asserted by PHPUnit.
-- Statistics include only resources owned by the authenticated user.
-- A user with no audits receives zeros and `latest_audit: null`.
+```bash
+php artisan test --filter=DashboardApiTest
+```
 
 ## Status
 

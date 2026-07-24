@@ -1,45 +1,32 @@
-# SEO Scoring Service Test Cases
+# SEO Scoring Service
 
-## Backend file/functionality tested
+## Backend part
 
-`SeoScoringService::calculate`, including technical, content, links, performance, and global score calculation.
+`SeoScoringService`: calculate technical, content, links, performance, and global scores.
 
-## Related backend files
-
-- `app/Services/Seo/SeoScoringService.php`
-- `app/Http/Controllers/Api/AuditController.php`
-- `app/Services/Seo/SeoCrawlerService.php`
-- `app/Models/Audit.php`
-
-## Test types covered
-
-Unit Tests, Feature Tests, and Integration Tests.
-
-## PHPUnit test files covering it
+## Real executable test file
 
 - `tests/Unit/SeoScoringServiceTest.php`
-- `tests/Feature/AuditApiTest.php` (API integration and persisted scores)
+- `tests/Feature/AuditApiTest.php`
 
-## Test cases / scenarios
+## What is tested
 
-| Scenario | Coverage |
-| --- | --- |
-| Slow or large pages | Unit: performance score reductions |
-| Weak performance metadata | Unit: response time, size, compression, caching, non-HTML response, and clamping |
-| Broken or poor-quality links | Unit: links score reduction and clamping |
-| On-page content problems | Unit: content score reduction and clamping |
-| Robots and sitemap problems | Unit: technical score reduction and clamping |
-| Multi-page crawl problems | Unit: technical/content reductions and clamping |
-| Structured-data problems | Unit: technical score reduction and clamping |
-| Site-wide quality problems | Unit: content/technical reductions and clamping |
-| API audit scoring | Feature: expected category scores, global rounded average, score bounds, and persistence |
+- Performance problems reduce the performance score.
+- Link problems reduce the links score.
+- Content problems reduce the content score.
+- Robots, sitemap, structured data, and site-wide problems affect scores.
+- Scores stay between `0` and `100`.
+- Audit API tests check calculated and stored scores.
 
-## Expected results
+## Test type
 
-- Healthy fixture data produces the asserted baseline scores.
-- Defined SEO problems reduce the relevant category scores.
-- Every returned score remains between `0` and `100`.
-- The global score behavior and stored scores match the feature-test assertions.
+Unit and integration tests.
+
+## How to run
+
+```bash
+php artisan test --filter=SeoScoringServiceTest
+```
 
 ## Status
 

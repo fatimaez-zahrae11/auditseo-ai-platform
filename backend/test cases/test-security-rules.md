@@ -1,53 +1,34 @@
-# Backend Security Rules Test Cases
+# Backend Security Rules
 
-## Backend file/functionality tested
+## Backend part
 
-Backend authentication, authorization, ownership isolation, request throttling, unsafe URL rejection, and secret/error-data protection.
+Authentication, resource ownership, request safety, rate limiting, and secret protection.
 
-## Related backend files
-
-- `routes/api.php`
-- `app/Http/Controllers/Api/AuthController.php`
-- `app/Http/Controllers/Api/AuditController.php`
-- `app/Http/Controllers/Api/AiRecommendationController.php`
-- `app/Http/Controllers/Api/DashboardController.php`
-- `app/Services/Seo/SeoCrawlerService.php`
-- `app/Services/Ai/AiRecommendationService.php`
-- `app/Models/ApiUsageLog.php`
-
-## Test types covered
-
-Security Tests, Feature Tests, Integration Tests, Validation Tests, Database Tests, and Mock Tests.
-
-## PHPUnit test files covering it
+## Real executable test file
 
 - `tests/Feature/AuthenticationTest.php`
 - `tests/Feature/AuditApiTest.php`
 - `tests/Feature/AiRecommendationApiTest.php`
 - `tests/Feature/DashboardApiTest.php`
 
-## Test cases / scenarios
+## What is tested
 
-| Security rule | PHPUnit-covered scenario |
-| --- | --- |
-| Sanctum authentication | `/api/me`, logout, audits, recommendations, and dashboard reject unauthenticated requests |
-| Password protection | Registration stores a hash; user JSON omits the password |
-| Token lifecycle | Registration/login create a token; logout revokes the current token |
-| Rate limiting | Registration is throttled after the tested request limit |
-| Audit ownership / IDOR protection | Users list and view only their own audits; cross-user detail access returns HTTP `404` |
-| Recommendation ownership | Cross-user generation/retrieval returns HTTP `404`; generation sends no external request |
-| Dashboard isolation | Counts and latest audit exclude other users' data |
-| Server-side request safety | Unsafe audit URLs are rejected before an HTTP request is made |
-| Safe error handling | Crawler and AI failures return generic messages without sensitive diagnostics |
-| Secret protection | AI API key is absent from responses and API usage logs |
+- Protected routes reject unauthenticated requests.
+- Users cannot read another user's audits or recommendations.
+- Dashboard data is limited to the authenticated user.
+- Unsafe audit URLs are rejected before an HTTP request is sent.
+- Registration rate limiting is enforced.
+- Passwords, API keys, and sensitive error details are not exposed in the tested responses or logs.
 
-## Expected results
+## Test type
 
-- Protected resources require authentication and enforce ownership.
-- Cross-user resources are not disclosed.
-- Unsafe URLs do not trigger outbound requests.
-- Passwords, API keys, tokens, and sensitive provider or transport diagnostics are not exposed by tested responses or logs.
-- Throttled requests return HTTP `429` where asserted.
+Feature and security tests.
+
+## How to run
+
+```bash
+php artisan test
+```
 
 ## Status
 

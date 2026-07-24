@@ -1,45 +1,32 @@
-# AI Recommendation Service Test Cases
+# AI Recommendation Service
 
-## Backend file/functionality tested
+## Backend part
 
-`AiRecommendationService::generate`, including prompt construction, configured external request behavior, response handling, and usage logging.
+`AiRecommendationService`: build the audit prompt, call the configured AI service, and handle its response.
 
-## Related backend files
+## Real executable test file
 
-- `app/Services/Ai/AiRecommendationService.php`
-- `app/Exceptions/AiRecommendationException.php`
-- `app/Models/Audit.php`
-- `app/Models/AuditIssue.php`
-- `app/Models/ApiUsageLog.php`
-- `app/Http/Controllers/Api/AiRecommendationController.php`
-- `config/services.php`
+`tests/Feature/AiRecommendationApiTest.php`
 
-## Test types covered
+There is no separate service unit test in the current test suite.
 
-Feature Tests, Integration Tests, Security Tests, Database Tests, and Mock Tests.
+## What is tested
 
-## PHPUnit test files covering it
+- A mocked AI response creates a stored recommendation.
+- The configured endpoint and model are used.
+- Audit scores, raw data, and issues are included in the request.
+- Provider failures return a safe error.
+- The API key is not returned or stored in usage logs.
 
-- `tests/Feature/AiRecommendationApiTest.php` (service exercised through the API with Laravel HTTP fakes)
+## Test type
 
-There is no separate unit test file for this service in the referenced suite.
+Feature, integration, security, HTTP mock, and database tests.
 
-## Test cases / scenarios
+## How to run
 
-| Scenario | Coverage |
-| --- | --- |
-| Successful generation | PHPUnit: mocked provider response is returned and persisted |
-| Configured request | PHPUnit: endpoint, model, authorization header, scores, raw data, and issues are included as asserted |
-| Failed provider response | PHPUnit: safe exception path, failed usage log, and no recommendation |
-| Successful-response confidentiality | PHPUnit: API key is not returned |
-| Usage-log confidentiality | PHPUnit: API key is not stored |
-
-## Expected results
-
-- A successful mocked provider call produces provider, prompt summary, and trimmed generated text for persistence.
-- The external request uses the configured endpoint and model and includes the audited SEO data.
-- A failed provider response becomes a generic service-unavailable API response.
-- Secrets and sensitive upstream diagnostics are not exposed.
+```bash
+php artisan test --filter=AiRecommendationApiTest
+```
 
 ## Status
 

@@ -1,45 +1,31 @@
-# AI Recommendation Controller Test Cases
+# AI Recommendation Controller
 
-## Backend file/functionality tested
+## Backend part
 
-`AiRecommendationController` operations for generating and retrieving recommendations for a user-owned audit.
+`AiRecommendationController`: generate and retrieve recommendations for an audit.
 
-## Related backend files
+## Real executable test file
 
-- `app/Http/Controllers/Api/AiRecommendationController.php`
-- `app/Services/Ai/AiRecommendationService.php`
-- `app/Exceptions/AiRecommendationException.php`
-- `app/Models/AiRecommendation.php`
-- `app/Models/Audit.php`
-- `routes/api.php`
+`tests/Feature/AiRecommendationApiTest.php`
 
-## Test types covered
+## What is tested
 
-Feature Tests, Integration Tests, Security Tests, Database Tests, and Mock Tests.
+- Recommendation routes require authentication.
+- A user can generate and store a recommendation for their own audit.
+- Stored recommendations are returned newest first.
+- Retrieving stored recommendations does not call the external AI service.
+- A user cannot access another user's audit recommendations.
+- External AI failures return a safe error.
 
-## PHPUnit test files covering it
+## Test type
 
-- `tests/Feature/AiRecommendationApiTest.php`
+Feature, integration, security, mock, and database tests.
 
-## Test cases / scenarios
+## How to run
 
-| Scenario | Coverage |
-| --- | --- |
-| Generate or retrieve recommendations without authentication | PHPUnit: requests are rejected |
-| Retrieve stored recommendations for an owned audit | PHPUnit: results are returned newest first |
-| Retrieve another user's recommendations | PHPUnit: access is hidden with HTTP `404` |
-| Retrieve stored recommendations without an external AI call | PHPUnit HTTP mock assertion |
-| Generate a recommendation for an owned audit | PHPUnit: external response is mocked and the recommendation is stored |
-| Generate for another user's audit | PHPUnit: HTTP `404`, no external request, and no recommendation stored |
-| External AI failure | PHPUnit: safe HTTP `502` response and no recommendation stored |
-| Successful response confidentiality | PHPUnit: configured API key is absent from JSON |
-
-## Expected results
-
-- Recommendation endpoints require Sanctum authentication and audit ownership.
-- Generation returns HTTP `201` and persists the mocked recommendation for the owned audit.
-- Retrieval returns stored recommendations without contacting the external provider.
-- Provider failures return a generic public error without secrets or upstream diagnostics.
+```bash
+php artisan test --filter=AiRecommendationApiTest
+```
 
 ## Status
 

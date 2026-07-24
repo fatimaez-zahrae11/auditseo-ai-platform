@@ -1,44 +1,30 @@
-# Auth Controller Test Cases
+# Auth Controller
 
-## Backend file/functionality tested
+## Backend part
 
-`AuthController` API operations: `register`, `login`, `me`, and `logout`.
+`AuthController`: register, login, `/api/me`, and logout.
 
-## Related backend files
+## Real executable test file
 
-- `app/Http/Controllers/Api/AuthController.php`
-- `app/Http/Requests/RegisterRequest.php`
-- `app/Http/Requests/LoginRequest.php`
-- `app/Models/User.php`
-- `routes/api.php`
+`tests/Feature/AuthenticationTest.php`
 
-## Test types covered
+## What is tested
 
-Feature Tests, Integration Tests, Security Tests, Validation Tests, and Database Tests.
+- Registration creates a user, hashes the password, and returns a Sanctum token.
+- Valid login works and invalid credentials are rejected.
+- `/api/me` and logout require authentication.
+- Logout revokes the current token.
+- Registration rate limiting is checked.
 
-## PHPUnit test files covering it
+## Test type
 
-- `tests/Feature/AuthenticationTest.php`
+Feature, security, and database tests.
 
-## Test cases / scenarios
+## How to run
 
-| Scenario | Coverage |
-| --- | --- |
-| Register a user with accepted data | PHPUnit: response structure, user creation, password hashing, and Sanctum token persistence |
-| Log in with valid credentials | PHPUnit: successful response and Sanctum token persistence |
-| Log in with invalid credentials | PHPUnit: invalid credentials are rejected |
-| Access `/api/me` | PHPUnit: unauthenticated rejection and authenticated user response without a password field |
-| Log out | PHPUnit: unauthenticated rejection, successful logout, and current token revocation |
-| Exceed the registration throttle | PHPUnit: the sixth request in the tested window is rate limited |
-
-## Expected results
-
-- Registration returns HTTP `201`, safe user data, and a token; the stored password is hashed.
-- Valid login returns HTTP `200`, safe user data, and a token.
-- Invalid credentials return HTTP `422` with the safe error message asserted by PHPUnit.
-- `/api/me` and logout require Sanctum authentication.
-- Logout removes the current personal access token.
-- Rate-limited registration returns HTTP `429`.
+```bash
+php artisan test --filter=AuthenticationTest
+```
 
 ## Status
 

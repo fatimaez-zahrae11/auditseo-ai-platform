@@ -1,38 +1,29 @@
-# API Usage Log Test Cases
+# API Usage Log
 
-## Backend file/functionality tested
+## Backend part
 
-`ApiUsageLog` persistence performed by `AiRecommendationService` for successful and failed external AI requests.
+`ApiUsageLog`: records external AI request results.
 
-## Related backend files
+## Real executable test file
 
-- `app/Models/ApiUsageLog.php`
-- `app/Services/Ai/AiRecommendationService.php`
-- `database/migrations/2026_07_08_202452_create_api_usage_logs_table.php`
-- `app/Models/User.php`
+`tests/Feature/AiRecommendationApiTest.php`
 
-## Test types covered
+## What is tested
 
-Integration Tests, Security Tests, Database Tests, and Mock Tests.
+- A successful AI request creates a success log.
+- A failed AI request creates a failed log.
+- Failed logs contain a safe error message.
+- Sensitive provider details and the API key are not stored.
 
-## PHPUnit test files covering it
+## Test type
 
-- `tests/Feature/AiRecommendationApiTest.php`
+Integration, security, mock, and database tests.
 
-## Test cases / scenarios
+## How to run
 
-| Scenario | Coverage |
-| --- | --- |
-| Log a successful AI request | PHPUnit: user, provider, success status, HTTP status, and null error are persisted |
-| Log a failed AI request | PHPUnit: failed status, upstream HTTP status, and a generic stored error are persisted |
-| Protect upstream diagnostics | PHPUnit: sensitive upstream error text is not stored |
-| Protect the API key | PHPUnit: the key is absent from all usage-log attributes |
-
-## Expected results
-
-- Successful and failed provider calls create the usage-log records asserted by PHPUnit.
-- Stored failure details are generic and safe.
-- API keys and sensitive upstream diagnostics are never stored in the usage log.
+```bash
+php artisan test --filter=AiRecommendationApiTest
+```
 
 ## Status
 
