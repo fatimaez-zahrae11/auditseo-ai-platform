@@ -1,6 +1,8 @@
 # Backend Test Cases Summary
 
-The files in `test cases` are review notes. They are not executable tests and do not replace PHPUnit !!
+The files in `test cases` are review notes. They are **not executable tests** and do not replace PHPUnit !!
+## Note on naming convention
+The executable test files follow the `XxxTest.php` **naming convention**
 
 The real tests are in:
 
