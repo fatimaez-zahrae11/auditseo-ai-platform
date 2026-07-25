@@ -1,8 +1,8 @@
-# Auth Controller
+# Authentication
 
 ## Backend part
 
-`AuthController`: register, login, `/api/me`, and logout.
+`app/Http/Controllers/Api/AuthController.php`
 
 ## Real executable test file
 
@@ -10,22 +10,26 @@
 
 ## What is tested
 
-- Registration creates a user, hashes the password, and returns a Sanctum token.
-- Valid login works and invalid credentials are rejected.
-- `/api/me` and logout require authentication.
-- Logout revokes the current token.
-- Registration rate limiting is checked.
+- Register and login
+- Input validation and duplicate email
+- Password hashing
+- Sanctum token creation and logout
+- `/api/me` authentication
+- Login and registration rate limits
 
 ## Test type
 
-Feature, security, and database tests.
+- Feature
+- Security
+- Validation
+- Database
 
 ## How to run
 
 ```bash
-php artisan test --filter=AuthenticationTest
+php artisan test
 ```
 
 ## Status
 
-**DONE**
+DONE

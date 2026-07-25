@@ -2,32 +2,36 @@
 
 ## Backend part
 
-`AiRecommendationService`: build the audit prompt, call the configured AI service, and handle its response.
+`app/Services/Ai/AiRecommendationService.php`
 
 ## Real executable test file
 
 `tests/Feature/AiRecommendationApiTest.php`
 
-There is no separate service unit test in the current test suite.
-
 ## What is tested
 
-- A mocked AI response creates a stored recommendation.
-- The configured endpoint and model are used.
-- Audit scores, raw data, and issues are included in the request.
-- Provider failures return a safe error.
-- The API key is not returned or stored in usage logs.
+- Send audit data to the configured AI endpoint
+- Use the configured model
+- Handle success, invalid response, HTTP error, and connection error
+- Store the generated recommendation
+- Keep the API key out of responses and logs
+
+All AI requests are faked during PHPUnit tests.
 
 ## Test type
 
-Feature, integration, security, HTTP mock, and database tests.
+- Feature
+- Integration
+- Security
+- Database
+- Mock
 
 ## How to run
 
 ```bash
-php artisan test --filter=AiRecommendationApiTest
+php artisan test
 ```
 
 ## Status
 
-**DONE**
+DONE

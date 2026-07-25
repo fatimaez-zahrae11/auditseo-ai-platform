@@ -2,11 +2,11 @@
 
 ## Backend part
 
-Main backend API flow checked manually with Thunder Client.
+Main API workflow checked with Thunder Client.
 
 ## Real executable test file
 
-This workflow is a manual smoke test, not an executable Markdown test. Its individual API parts are also covered by:
+The manual workflow is not an executable test. Related PHPUnit tests are in:
 
 - `tests/Feature/AuthenticationTest.php`
 - `tests/Feature/AuditApiTest.php`
@@ -15,23 +15,27 @@ This workflow is a manual smoke test, not an executable Markdown test. Its indiv
 
 ## What is tested
 
-1. Register.
-2. Call `/api/me`.
-3. Create an audit with `https://www.python.org`.
-4. Generate an AI recommendation.
-5. Retrieve the stored recommendation.
-6. Open the dashboard.
+- Register
+- Call `/api/me`
+- Create an audit for `https://www.python.org`
+- Generate an AI recommendation
+- Retrieve the stored recommendation
+- Open the dashboard
 
-No token, password, API key, or secret is stored in this document.
+No token, password, API key, or secret is written here.
 
 ## Test type
 
-Manual Smoke Test using Thunder Client.
+- Manual Smoke
 
 ## How to run
 
-Run the steps above in Thunder Client against the local backend API.
+Run the steps above with Thunder Client. Run PHPUnit separately with:
+
+```bash
+php artisan test
+```
 
 ## Status
 
-**DONE**
+DONE

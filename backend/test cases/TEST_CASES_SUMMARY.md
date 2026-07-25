@@ -1,33 +1,30 @@
 # Backend Test Cases Summary
 
-## Purpose
+The files in `test cases` are review notes. They are not executable tests and do not replace PHPUnit.
 
-The real executable tests are in:
+The real tests are in:
 
 - `tests/Feature/`
 - `tests/Unit/`
 
-Run them from the backend folder with:
+Run all tests from the backend folder:
 
 ```bash
 php artisan test
 ```
 
-The `test cases` folder only explains the existing test coverage in a simple way for review. These Markdown files are documentation and do not replace the PHPUnit tests.
+## Covered areas
 
-## Executable test files used
+- Authentication
+- Audit API
+- SEO crawler
+- SEO scoring
+- AI recommendations
+- Dashboard
+- Security
+- Database persistence
+- Manual backend workflow
 
-- `tests/Feature/AuthenticationTest.php`
-- `tests/Feature/AuditApiTest.php`
-- `tests/Feature/AiRecommendationApiTest.php`
-- `tests/Feature/DashboardApiTest.php`
-- `tests/Unit/SeoScoringServiceTest.php`
+The backend workflow was also checked manually with Thunder Client.
 
-## Notes
-
-- The backend API workflow was manually tested with Thunder Client.
-- Full frontend E2E testing is pending frontend integration.
-
-## Status
-
-**DONE**
+Frontend E2E testing is pending frontend integration.

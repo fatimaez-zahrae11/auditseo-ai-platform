@@ -1,8 +1,8 @@
-# SEO Scoring Service
+# SEO Scoring
 
 ## Backend part
 
-`SeoScoringService`: calculate technical, content, links, performance, and global scores.
+`app/Services/Seo/SeoScoringService.php`
 
 ## Real executable test file
 
@@ -11,23 +11,24 @@
 
 ## What is tested
 
-- Performance problems reduce the performance score.
-- Link problems reduce the links score.
-- Content problems reduce the content score.
-- Robots, sitemap, structured data, and site-wide problems affect scores.
-- Scores stay between `0` and `100`.
-- Audit API tests check calculated and stored scores.
+- Technical score
+- Content score
+- Links score
+- Performance score
+- Global score
+- Scores stay between `0` and `100`
 
 ## Test type
 
-Unit and integration tests.
+- Unit
+- Integration
 
 ## How to run
 
 ```bash
-php artisan test --filter=SeoScoringServiceTest
+php artisan test
 ```
 
 ## Status
 
-**DONE**
+DONE

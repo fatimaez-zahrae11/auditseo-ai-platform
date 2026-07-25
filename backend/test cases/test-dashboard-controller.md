@@ -1,8 +1,8 @@
-# Dashboard Controller
+# Dashboard API
 
 ## Backend part
 
-`DashboardController`: dashboard totals and latest audit.
+`app/Http/Controllers/Api/DashboardController.php`
 
 ## Real executable test file
 
@@ -10,22 +10,25 @@
 
 ## What is tested
 
-- The dashboard requires authentication.
-- Audit, issue, and recommendation totals are returned.
-- The average score and latest audit are returned.
-- Only the authenticated user's data is included.
-- Empty dashboard values are handled.
+- Authentication is required
+- Audit, issue, and recommendation totals
+- Average score and latest audit
+- Data is limited to the current user
+- Empty dashboard response
 
 ## Test type
 
-Feature, security, and database tests.
+- Feature
+- Integration
+- Security
+- Database
 
 ## How to run
 
 ```bash
-php artisan test --filter=DashboardApiTest
+php artisan test
 ```
 
 ## Status
 
-**DONE**
+DONE

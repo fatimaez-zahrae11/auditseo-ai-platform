@@ -1,8 +1,8 @@
-# Audit Controller
+# Audit API
 
 ## Backend part
 
-`AuditController`: create, list, and view SEO audits.
+`app/Http/Controllers/Api/AuditController.php`
 
 ## Real executable test file
 
@@ -10,23 +10,28 @@
 
 ## What is tested
 
-- Audit routes require authentication.
-- An authenticated user can create an audit.
-- Crawl data, scores, issues, domains, and audits are stored.
-- Crawler failures return a safe error.
-- Existing domains are reused for the same user.
-- Users can list and view only their own audits.
+- Create an audit
+- Store crawl data, scores, and issues
+- Reject invalid URLs
+- Return a safe crawler error
+- Reuse an existing user domain
+- List and view only the user's audits
 
 ## Test type
 
-Feature, integration, security, and database tests.
+- Feature
+- Integration
+- Security
+- Validation
+- Database
+- Mock
 
 ## How to run
 
 ```bash
-php artisan test --filter=AuditApiTest
+php artisan test
 ```
 
 ## Status
 
-**DONE**
+DONE

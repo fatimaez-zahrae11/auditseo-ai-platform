@@ -1,8 +1,8 @@
-# API Usage Log
+# API Usage Logging
 
 ## Backend part
 
-`ApiUsageLog`: records external AI request results.
+`app/Models/ApiUsageLog.php`
 
 ## Real executable test file
 
@@ -10,21 +10,24 @@
 
 ## What is tested
 
-- A successful AI request creates a success log.
-- A failed AI request creates a failed log.
-- Failed logs contain a safe error message.
-- Sensitive provider details and the API key are not stored.
+- Log successful AI requests
+- Log failed AI requests
+- Store safe error messages
+- Do not store the API key or sensitive provider details
 
 ## Test type
 
-Integration, security, mock, and database tests.
+- Integration
+- Security
+- Database
+- Mock
 
 ## How to run
 
 ```bash
-php artisan test --filter=AiRecommendationApiTest
+php artisan test
 ```
 
 ## Status
 
-**DONE**
+DONE

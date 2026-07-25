@@ -1,8 +1,8 @@
-# AI Recommendation Controller
+# AI Recommendation API
 
 ## Backend part
 
-`AiRecommendationController`: generate and retrieve recommendations for an audit.
+`app/Http/Controllers/Api/AiRecommendationController.php`
 
 ## Real executable test file
 
@@ -10,23 +10,27 @@
 
 ## What is tested
 
-- Recommendation routes require authentication.
-- A user can generate and store a recommendation for their own audit.
-- Stored recommendations are returned newest first.
-- Retrieving stored recommendations does not call the external AI service.
-- A user cannot access another user's audit recommendations.
-- External AI failures return a safe error.
+- Generate and store a recommendation
+- Retrieve stored recommendations newest first
+- Require authentication and audit ownership
+- Avoid an AI call when reading stored data
+- Return safe errors when the AI service fails
+- Limit recommendation generation requests
 
 ## Test type
 
-Feature, integration, security, mock, and database tests.
+- Feature
+- Integration
+- Security
+- Database
+- Mock
 
 ## How to run
 
 ```bash
-php artisan test --filter=AiRecommendationApiTest
+php artisan test
 ```
 
 ## Status
 
-**DONE**
+DONE

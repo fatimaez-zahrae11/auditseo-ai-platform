@@ -1,8 +1,8 @@
-# Backend Security Rules
+# Security Rules
 
 ## Backend part
 
-Authentication, resource ownership, request safety, rate limiting, and secret protection.
+Authentication, ownership checks, SSRF protection, rate limits, and secret handling.
 
 ## Real executable test file
 
@@ -13,16 +13,17 @@ Authentication, resource ownership, request safety, rate limiting, and secret pr
 
 ## What is tested
 
-- Protected routes reject unauthenticated requests.
-- Users cannot read another user's audits or recommendations.
-- Dashboard data is limited to the authenticated user.
-- Unsafe audit URLs are rejected before an HTTP request is sent.
-- Registration rate limiting is enforced.
-- Passwords, API keys, and sensitive error details are not exposed in the tested responses or logs.
+- Protected routes require authentication
+- Users cannot access another user's data
+- Unsafe URLs and private redirect targets are blocked
+- Login, registration, and AI generation are rate limited
+- Passwords, API keys, and sensitive errors are not exposed
 
 ## Test type
 
-Feature and security tests.
+- Feature
+- Security
+- Validation
 
 ## How to run
 
@@ -32,4 +33,4 @@ php artisan test
 
 ## Status
 
-**DONE**
+DONE
