@@ -7,6 +7,7 @@ use App\Models\Audit;
 use App\Models\Domain;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
@@ -218,6 +219,70 @@ class AiRecommendationApiTest extends TestCase
         $this->assertDatabaseMissing('api_usage_logs', [
             'error_message' => 'Upstream failure containing sensitive diagnostics.',
         ]);
+    }
+
+    public function test_an_invalid_ai_response_is_handled_and_logged(): void
+    {
+        $this->aiResponse = ['choices' => []];
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'AI recommendation service is unavailable.']);
+
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertDatabaseHas('api_usage_logs', [
+            'user_id' => $user->id,
+            'provider' => 'test-provider',
+            'status' => 'failed',
+            'status_code' => 200,
+            'error_message' => 'External AI response was invalid.',
+        ]);
+    }
+
+    public function test_an_ai_connection_failure_is_handled_and_logged_safely(): void
+    {
+        Http::fake(fn () => throw new ConnectionException('Sensitive connection details'));
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $response = $this->postJson("/api/audits/{$audit->id}/recommendations");
+
+        $response
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'AI recommendation service is unavailable.'])
+            ->assertDontSee('Sensitive connection details')
+            ->assertDontSee(self::AI_KEY);
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertDatabaseHas('api_usage_logs', [
+            'user_id' => $user->id,
+            'provider' => 'test-provider',
+            'status' => 'failed',
+            'status_code' => null,
+            'error_message' => 'External AI request failed.',
+        ]);
+    }
+
+    public function test_recommendation_generation_is_rate_limited(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        foreach (range(1, 5) as $attempt) {
+            $this->postJson("/api/audits/{$audit->id}/recommendations")
+                ->assertCreated();
+        }
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertTooManyRequests();
+
+        Http::assertSentCount(5);
+        $this->assertDatabaseCount('ai_recommendations', 5);
+        $this->assertDatabaseCount('api_usage_logs', 5);
     }
 
     public function test_api_key_is_not_exposed_in_a_successful_json_response(): void

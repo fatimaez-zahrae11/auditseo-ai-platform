@@ -1678,6 +1678,42 @@ class AuditApiTest extends TestCase
         $this->assertDatabaseCount('audits', 0);
     }
 
+    public function test_invalid_audit_urls_are_rejected_before_crawling(): void
+    {
+        Sanctum::actingAs(User::factory()->create());
+
+        foreach ([[], ['url' => 'not-a-url'], ['url' => 'ftp://example.com']] as $payload) {
+            $this->postJson('/api/audits', $payload)
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors('url');
+        }
+
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('domains', 0);
+        $this->assertDatabaseCount('audits', 0);
+    }
+
+    public function test_a_redirect_to_a_private_address_is_blocked(): void
+    {
+        $this->redirects = [
+            'https://example.com/start' => [
+                'status' => 302,
+                'location' => 'http://127.0.0.1/private',
+            ],
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/start'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('url');
+
+        Http::assertSentCount(1);
+        Http::assertNotSent(
+            fn (Request $request) => $request->url() === 'http://127.0.0.1/private',
+        );
+        $this->assertDatabaseCount('audits', 0);
+    }
+
     public function test_creating_an_audit_reuses_the_users_existing_domain(): void
     {
         $user = User::factory()->create();

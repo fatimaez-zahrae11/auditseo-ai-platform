@@ -64,6 +64,37 @@ class AuthenticationTest extends TestCase
         ])->assertUnprocessable()->assertJson(['message' => 'Invalid credentials.']);
     }
 
+    public function test_authentication_endpoints_validate_their_input(): void
+    {
+        $this->postJson('/api/register', [
+            'email' => 'not-an-email',
+            'password' => 'lowercase',
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors(['name', 'email', 'password']);
+
+        $this->postJson('/api/login', [])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['email', 'password']);
+
+        $this->assertDatabaseCount('users', 0);
+        $this->assertDatabaseCount('personal_access_tokens', 0);
+    }
+
+    public function test_registration_rejects_an_email_that_is_already_registered(): void
+    {
+        User::factory()->create(['email' => 'test@example.com']);
+
+        $this->postJson('/api/register', [
+            'name' => 'Duplicate User',
+            'email' => 'test@example.com',
+            'password' => 'Password1',
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('email');
+
+        $this->assertDatabaseCount('users', 1);
+        $this->assertDatabaseCount('personal_access_tokens', 0);
+    }
+
     public function test_me_requires_authentication_and_returns_the_authenticated_user(): void
     {
         $this->getJson('/api/me')->assertUnauthorized();
@@ -108,5 +139,27 @@ class AuthenticationTest extends TestCase
             'email' => 'limited@example.com',
             'password' => 'Password1',
         ])->assertTooManyRequests();
+    }
+
+    public function test_login_is_rate_limited(): void
+    {
+        User::factory()->create([
+            'email' => 'test@example.com',
+            'password' => Hash::make('Password1'),
+        ]);
+
+        foreach (range(1, 5) as $attempt) {
+            $this->postJson('/api/login', [
+                'email' => 'test@example.com',
+                'password' => "WrongPassword{$attempt}",
+            ])->assertUnprocessable();
+        }
+
+        $this->postJson('/api/login', [
+            'email' => 'test@example.com',
+            'password' => 'WrongPassword6',
+        ])->assertTooManyRequests();
+
+        $this->assertDatabaseCount('personal_access_tokens', 0);
     }
 }
