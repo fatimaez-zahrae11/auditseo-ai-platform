@@ -244,4 +244,57 @@ class AuthenticationTest extends TestCase
 
         $this->assertDatabaseCount('personal_access_tokens', 0);
     }
+
+    public function test_register_rate_limit_does_not_block_login(): void
+    {
+        User::factory()->create([
+            'email' => 'login@example.com',
+            'password' => Hash::make('Password1'),
+        ]);
+
+        foreach (range(1, 5) as $attempt) {
+            $this->postJson('/api/register', [
+                'name' => "Test User {$attempt}",
+                'email' => "register{$attempt}@example.com",
+                'password' => 'Password1',
+            ])->assertCreated();
+        }
+
+        $this->postJson('/api/register', [
+            'name' => 'Rate Limited User',
+            'email' => 'register-limited@example.com',
+            'password' => 'Password1',
+        ])->assertTooManyRequests();
+
+        $this->postJson('/api/login', [
+            'email' => 'login@example.com',
+            'password' => 'Password1',
+        ])->assertOk();
+    }
+
+    public function test_login_rate_limit_does_not_block_register(): void
+    {
+        User::factory()->create([
+            'email' => 'login@example.com',
+            'password' => Hash::make('Password1'),
+        ]);
+
+        foreach (range(1, 5) as $attempt) {
+            $this->postJson('/api/login', [
+                'email' => 'login@example.com',
+                'password' => "WrongPassword{$attempt}",
+            ])->assertUnprocessable();
+        }
+
+        $this->postJson('/api/login', [
+            'email' => 'login@example.com',
+            'password' => 'WrongPassword6',
+        ])->assertTooManyRequests();
+
+        $this->postJson('/api/register', [
+            'name' => 'New User',
+            'email' => 'register@example.com',
+            'password' => 'Password1',
+        ])->assertCreated();
+    }
 }

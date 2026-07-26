@@ -9,10 +9,10 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/health', [HealthCheckController::class, 'index']);
 
-Route::middleware('throttle:5,1')->group(function () {
-    Route::post('/register', [AuthController::class, 'register']);
-    Route::post('/login', [AuthController::class, 'login']);
-});
+Route::post('/register', [AuthController::class, 'register'])
+    ->middleware('throttle:register');
+Route::post('/login', [AuthController::class, 'login'])
+    ->middleware('throttle:login');
 
 Route::middleware(['auth:sanctum', 'throttle:30,1'])->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
