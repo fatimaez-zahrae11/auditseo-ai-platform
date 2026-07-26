@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\AuthAuditLog;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
@@ -51,6 +52,16 @@ class AuthenticationTest extends TestCase
 
         $this->assertDatabaseCount('personal_access_tokens', 1);
         $this->assertNotNull($user->tokens()->firstOrFail()->expires_at);
+
+        $auditLog = AuthAuditLog::sole();
+
+        $this->assertSame($user->id, $auditLog->user_id);
+        $this->assertSame('test@example.com', $auditLog->email);
+        $this->assertSame(AuthAuditLog::EVENT_LOGIN, $auditLog->event);
+        $this->assertSame(AuthAuditLog::STATUS_SUCCESS, $auditLog->status);
+        $this->assertNotNull($auditLog->ip_address);
+        $this->assertStringNotContainsString('Password1', $auditLog->toJson());
+        $this->assertStringNotContainsString($response->json('token'), $auditLog->toJson());
     }
 
     public function test_login_revokes_the_users_old_tokens(): void
@@ -100,6 +111,19 @@ class AuthenticationTest extends TestCase
 
         $this->assertSame($invalidPasswordResponse->getContent(), $unknownEmailResponse->getContent());
         $this->assertDatabaseCount('personal_access_tokens', 0);
+        $this->assertDatabaseHas('auth_audit_logs', [
+            'user_id' => null,
+            'email' => 'unknown@example.com',
+            'event' => AuthAuditLog::EVENT_LOGIN,
+            'status' => AuthAuditLog::STATUS_FAILED,
+        ]);
+        $this->assertDatabaseCount('auth_audit_logs', 2);
+
+        foreach (AuthAuditLog::all() as $auditLog) {
+            $this->assertStringNotContainsString('WrongPassword1', $auditLog->toJson());
+            $this->assertArrayNotHasKey('password', $auditLog->getAttributes());
+            $this->assertArrayNotHasKey('token', $auditLog->getAttributes());
+        }
     }
 
     public function test_authentication_endpoints_validate_their_input(): void
@@ -162,6 +186,12 @@ class AuthenticationTest extends TestCase
 
         $this->assertDatabaseMissing('personal_access_tokens', ['id' => $currentToken->accessToken->id]);
         $this->assertDatabaseHas('personal_access_tokens', ['id' => $otherToken->accessToken->id]);
+        $this->assertDatabaseHas('auth_audit_logs', [
+            'user_id' => $user->id,
+            'email' => $user->email,
+            'event' => AuthAuditLog::EVENT_LOGOUT,
+            'status' => AuthAuditLog::STATUS_SUCCESS,
+        ]);
 
         $this->app['auth']->forgetGuards();
 
@@ -192,6 +222,12 @@ class AuthenticationTest extends TestCase
             ]);
 
         $this->assertDatabaseCount('personal_access_tokens', 0);
+        $this->assertDatabaseHas('auth_audit_logs', [
+            'user_id' => $user->id,
+            'email' => $user->email,
+            'event' => AuthAuditLog::EVENT_LOGOUT_ALL,
+            'status' => AuthAuditLog::STATUS_SUCCESS,
+        ]);
 
         $this->app['auth']->forgetGuards();
 
@@ -243,6 +279,7 @@ class AuthenticationTest extends TestCase
         ])->assertTooManyRequests();
 
         $this->assertDatabaseCount('personal_access_tokens', 0);
+        $this->assertDatabaseCount('auth_audit_logs', 5);
     }
 
     public function test_register_rate_limit_does_not_block_login(): void

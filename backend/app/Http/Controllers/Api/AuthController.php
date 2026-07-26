@@ -5,10 +5,12 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\LoginRequest;
 use App\Http\Requests\RegisterRequest;
+use App\Models\AuthAuditLog;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 
 class AuthController extends Controller
 {
@@ -40,6 +42,14 @@ class AuthController extends Controller
         );
 
         if (! $user || ! $passwordMatches) {
+            $this->recordAuthEvent(
+                request: $request,
+                event: AuthAuditLog::EVENT_LOGIN,
+                status: AuthAuditLog::STATUS_FAILED,
+                user: $user,
+                email: $request->validated('email'),
+            );
+
             return response()->json([
                 'message' => 'Invalid credentials.',
             ], 422);
@@ -48,6 +58,14 @@ class AuthController extends Controller
         $user->tokens()->delete();
 
         $token = $this->createToken($user);
+
+        $this->recordAuthEvent(
+            request: $request,
+            event: AuthAuditLog::EVENT_LOGIN,
+            status: AuthAuditLog::STATUS_SUCCESS,
+            user: $user,
+            email: $user->email,
+        );
 
         return response()->json([
             'message' => 'Login successful.',
@@ -65,7 +83,17 @@ class AuthController extends Controller
 
     public function logout(Request $request): JsonResponse
     {
-        $request->user()->currentAccessToken()?->delete();
+        $user = $request->user();
+
+        $user->currentAccessToken()?->delete();
+
+        $this->recordAuthEvent(
+            request: $request,
+            event: AuthAuditLog::EVENT_LOGOUT,
+            status: AuthAuditLog::STATUS_SUCCESS,
+            user: $user,
+            email: $user->email,
+        );
 
         return response()->json([
             'message' => 'Logout successful.',
@@ -74,7 +102,17 @@ class AuthController extends Controller
 
     public function logoutAll(Request $request): JsonResponse
     {
-        $request->user()->tokens()->delete();
+        $user = $request->user();
+
+        $user->tokens()->delete();
+
+        $this->recordAuthEvent(
+            request: $request,
+            event: AuthAuditLog::EVENT_LOGOUT_ALL,
+            status: AuthAuditLog::STATUS_SUCCESS,
+            user: $user,
+            email: $user->email,
+        );
 
         return response()->json([
             'message' => 'All sessions logged out successfully.',
@@ -87,5 +125,24 @@ class AuthController extends Controller
         $expiresAt = now()->addMinutes($expirationMinutes);
 
         return $user->createToken('api-token', ['*'], $expiresAt)->plainTextToken;
+    }
+
+    private function recordAuthEvent(
+        Request $request,
+        string $event,
+        string $status,
+        ?User $user,
+        ?string $email,
+    ): void {
+        AuthAuditLog::create([
+            'user_id' => $user?->id,
+            'email' => $email === null ? null : Str::limit(Str::lower(trim($email)), 255, ''),
+            'event' => $event,
+            'ip_address' => Str::limit((string) $request->ip(), 45, ''),
+            'user_agent' => $request->userAgent() === null
+                ? null
+                : Str::limit($request->userAgent(), 1000, ''),
+            'status' => $status,
+        ]);
     }
 }
