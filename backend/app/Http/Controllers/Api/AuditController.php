@@ -85,10 +85,22 @@ class AuditController extends Controller
             ->with('domain')
             ->whereHas('domain', fn ($query) => $query->where('user_id', $request->user()->id))
             ->latest()
-            ->get();
+            ->paginate(20);
 
         return response()->json([
-            'audits' => $audits,
+            'audits' => $audits->items(),
+            'pagination' => [
+                'current_page' => $audits->currentPage(),
+                'last_page' => $audits->lastPage(),
+                'per_page' => $audits->perPage(),
+                'total' => $audits->total(),
+                'from' => $audits->firstItem(),
+                'to' => $audits->lastItem(),
+                'first_page_url' => $audits->url(1),
+                'last_page_url' => $audits->url($audits->lastPage()),
+                'previous_page_url' => $audits->previousPageUrl(),
+                'next_page_url' => $audits->nextPageUrl(),
+            ],
         ]);
     }
 

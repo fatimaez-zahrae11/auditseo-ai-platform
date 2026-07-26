@@ -1740,6 +1740,62 @@ class AuditApiTest extends TestCase
             ->assertOk()
             ->assertJsonCount(1, 'audits')
             ->assertJsonPath('audits.0.id', $ownAudit->id)
+            ->assertJsonPath('audits.0.domain.user_id', $user->id)
+            ->assertJsonPath('pagination.current_page', 1)
+            ->assertJsonPath('pagination.per_page', 20)
+            ->assertJsonPath('pagination.total', 1)
+            ->assertJsonStructure([
+                'pagination' => [
+                    'current_page',
+                    'last_page',
+                    'per_page',
+                    'total',
+                    'from',
+                    'to',
+                    'first_page_url',
+                    'last_page_url',
+                    'previous_page_url',
+                    'next_page_url',
+                ],
+            ])
+            ->assertJsonMissing(['id' => $otherAudit->id]);
+    }
+
+    public function test_audit_index_is_paginated_twenty_per_page(): void
+    {
+        $user = User::factory()->create();
+        $otherUser = User::factory()->create();
+
+        foreach (range(1, 25) as $auditNumber) {
+            $this->createAuditFor($user, "own-{$auditNumber}.example.com");
+        }
+
+        $otherAudit = $this->createAuditFor($otherUser, 'other.example.com');
+        Sanctum::actingAs($user);
+
+        $firstPage = $this->getJson('/api/audits');
+
+        $firstPage
+            ->assertOk()
+            ->assertJsonCount(20, 'audits')
+            ->assertJsonPath('pagination.current_page', 1)
+            ->assertJsonPath('pagination.last_page', 2)
+            ->assertJsonPath('pagination.per_page', 20)
+            ->assertJsonPath('pagination.total', 25)
+            ->assertJsonPath('pagination.from', 1)
+            ->assertJsonPath('pagination.to', 20)
+            ->assertJsonMissing(['id' => $otherAudit->id]);
+
+        $secondPage = $this->getJson('/api/audits?page=2');
+
+        $secondPage
+            ->assertOk()
+            ->assertJsonCount(5, 'audits')
+            ->assertJsonPath('pagination.current_page', 2)
+            ->assertJsonPath('pagination.per_page', 20)
+            ->assertJsonPath('pagination.total', 25)
+            ->assertJsonPath('pagination.from', 21)
+            ->assertJsonPath('pagination.to', 25)
             ->assertJsonMissing(['id' => $otherAudit->id]);
     }
 
