@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
 {
+    private const DUMMY_PASSWORD_HASH = '$2y$12$wD95k2pP2KnUv2eRsga.O.dOYzIlM/f4JG/07Ts8GBxW0bIhWbMhO';
+
     public function register(RegisterRequest $request): JsonResponse
     {
         $user = User::create([
@@ -32,8 +34,12 @@ class AuthController extends Controller
     public function login(LoginRequest $request): JsonResponse
     {
         $user = User::where('email', $request->validated('email'))->first();
+        $passwordMatches = Hash::check(
+            $request->validated('password'),
+            $user?->password ?? self::DUMMY_PASSWORD_HASH,
+        );
 
-        if (! $user || ! Hash::check($request->validated('password'), $user->password)) {
+        if (! $user || ! $passwordMatches) {
             return response()->json([
                 'message' => 'Invalid credentials.',
             ], 422);

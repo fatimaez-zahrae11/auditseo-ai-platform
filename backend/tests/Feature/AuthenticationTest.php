@@ -73,17 +73,33 @@ class AuthenticationTest extends TestCase
         $this->assertNotNull($user->tokens()->firstOrFail()->expires_at);
     }
 
-    public function test_login_rejects_invalid_credentials(): void
+    public function test_login_returns_the_same_error_for_an_invalid_password_and_unknown_email(): void
     {
         User::factory()->create([
             'email' => 'test@example.com',
             'password' => Hash::make('Password1'),
         ]);
 
-        $this->postJson('/api/login', [
+        $invalidPasswordResponse = $this->postJson('/api/login', [
             'email' => 'test@example.com',
             'password' => 'WrongPassword1',
-        ])->assertUnprocessable()->assertJson(['message' => 'Invalid credentials.']);
+        ]);
+
+        $unknownEmailResponse = $this->postJson('/api/login', [
+            'email' => 'unknown@example.com',
+            'password' => 'WrongPassword1',
+        ]);
+
+        $invalidPasswordResponse
+            ->assertUnprocessable()
+            ->assertExactJson(['message' => 'Invalid credentials.']);
+
+        $unknownEmailResponse
+            ->assertUnprocessable()
+            ->assertExactJson(['message' => 'Invalid credentials.']);
+
+        $this->assertSame($invalidPasswordResponse->getContent(), $unknownEmailResponse->getContent());
+        $this->assertDatabaseCount('personal_access_tokens', 0);
     }
 
     public function test_authentication_endpoints_validate_their_input(): void
