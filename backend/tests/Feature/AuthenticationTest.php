@@ -29,11 +29,12 @@ class AuthenticationTest extends TestCase
         $this->assertTrue(Hash::check('Password1', $user->password));
         $this->assertNotSame('Password1', $user->password);
         $this->assertDatabaseCount('personal_access_tokens', 1);
+        $this->assertNotNull($user->tokens()->firstOrFail()->expires_at);
     }
 
     public function test_a_user_can_login_with_valid_credentials(): void
     {
-        User::factory()->create([
+        $user = User::factory()->create([
             'email' => 'test@example.com',
             'password' => Hash::make('Password1'),
         ]);
@@ -49,6 +50,27 @@ class AuthenticationTest extends TestCase
             ->assertJsonMissingPath('user.password');
 
         $this->assertDatabaseCount('personal_access_tokens', 1);
+        $this->assertNotNull($user->tokens()->firstOrFail()->expires_at);
+    }
+
+    public function test_login_revokes_the_users_old_tokens(): void
+    {
+        $user = User::factory()->create([
+            'email' => 'test@example.com',
+            'password' => Hash::make('Password1'),
+        ]);
+        $firstOldToken = $user->createToken('old-token-1')->accessToken;
+        $secondOldToken = $user->createToken('old-token-2')->accessToken;
+
+        $this->postJson('/api/login', [
+            'email' => 'test@example.com',
+            'password' => 'Password1',
+        ])->assertOk();
+
+        $this->assertDatabaseCount('personal_access_tokens', 1);
+        $this->assertDatabaseMissing('personal_access_tokens', ['id' => $firstOldToken->id]);
+        $this->assertDatabaseMissing('personal_access_tokens', ['id' => $secondOldToken->id]);
+        $this->assertNotNull($user->tokens()->firstOrFail()->expires_at);
     }
 
     public function test_login_rejects_invalid_credentials(): void
@@ -114,14 +136,58 @@ class AuthenticationTest extends TestCase
         $this->postJson('/api/logout')->assertUnauthorized();
 
         $user = User::factory()->create();
-        $token = $user->createToken('test-token')->plainTextToken;
+        $currentToken = $user->createToken('current-token');
+        $otherToken = $user->createToken('other-token');
 
-        $this->withToken($token)
+        $this->withToken($currentToken->plainTextToken)
             ->postJson('/api/logout')
             ->assertOk()
             ->assertJson(['message' => 'Logout successful.']);
 
+        $this->assertDatabaseMissing('personal_access_tokens', ['id' => $currentToken->accessToken->id]);
+        $this->assertDatabaseHas('personal_access_tokens', ['id' => $otherToken->accessToken->id]);
+
+        $this->app['auth']->forgetGuards();
+
+        $this->withToken($currentToken->plainTextToken)
+            ->getJson('/api/me')
+            ->assertUnauthorized();
+
+        $this->app['auth']->forgetGuards();
+
+        $this->withToken($otherToken->plainTextToken)
+            ->getJson('/api/me')
+            ->assertOk();
+    }
+
+    public function test_logout_all_requires_authentication_and_revokes_every_token(): void
+    {
+        $this->postJson('/api/logout-all')->assertUnauthorized();
+
+        $user = User::factory()->create();
+        $firstToken = $user->createToken('first-token')->plainTextToken;
+        $secondToken = $user->createToken('second-token')->plainTextToken;
+
+        $this->withToken($firstToken)
+            ->postJson('/api/logout-all')
+            ->assertOk()
+            ->assertExactJson([
+                'message' => 'All sessions logged out successfully.',
+            ]);
+
         $this->assertDatabaseCount('personal_access_tokens', 0);
+
+        $this->app['auth']->forgetGuards();
+
+        $this->withToken($firstToken)
+            ->getJson('/api/me')
+            ->assertUnauthorized();
+
+        $this->app['auth']->forgetGuards();
+
+        $this->withToken($secondToken)
+            ->getJson('/api/me')
+            ->assertUnauthorized();
     }
 
     public function test_register_is_rate_limited(): void

@@ -20,7 +20,7 @@ class AuthController extends Controller
             'password' => Hash::make($request->validated('password')),
         ]);
 
-        $token = $user->createToken('api-token')->plainTextToken;
+        $token = $this->createToken($user);
 
         return response()->json([
             'message' => 'Registration successful.',
@@ -39,7 +39,9 @@ class AuthController extends Controller
             ], 422);
         }
 
-        $token = $user->createToken('api-token')->plainTextToken;
+        $user->tokens()->delete();
+
+        $token = $this->createToken($user);
 
         return response()->json([
             'message' => 'Login successful.',
@@ -62,5 +64,22 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'Logout successful.',
         ]);
+    }
+
+    public function logoutAll(Request $request): JsonResponse
+    {
+        $request->user()->tokens()->delete();
+
+        return response()->json([
+            'message' => 'All sessions logged out successfully.',
+        ]);
+    }
+
+    private function createToken(User $user): string
+    {
+        $expirationMinutes = (int) config('sanctum.expiration', 1440);
+        $expiresAt = now()->addMinutes($expirationMinutes);
+
+        return $user->createToken('api-token', ['*'], $expiresAt)->plainTextToken;
     }
 }

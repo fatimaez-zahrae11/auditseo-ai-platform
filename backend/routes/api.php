@@ -17,6 +17,7 @@ Route::middleware('throttle:5,1')->group(function () {
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);
+    Route::post('/logout-all', [AuthController::class, 'logoutAll']);
     Route::get('/dashboard', [DashboardController::class, 'index']);
 
     Route::post('/audits', [AuditController::class, 'store']);
