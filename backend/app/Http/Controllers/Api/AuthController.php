@@ -24,12 +24,10 @@ class AuthController extends Controller
             'password' => Hash::make($request->validated('password')),
         ]);
 
-        $token = $this->createToken($user);
+        $user->sendEmailVerificationNotification();
 
         return response()->json([
-            'message' => 'Registration successful.',
-            'user' => $user,
-            'token' => $token,
+            'message' => 'Registration successful. Please verify your email before logging in.',
         ], 201);
     }
 
@@ -53,6 +51,20 @@ class AuthController extends Controller
             return response()->json([
                 'message' => 'Invalid credentials.',
             ], 422);
+        }
+
+        if (! $user->hasVerifiedEmail()) {
+            $this->recordAuthEvent(
+                request: $request,
+                event: AuthAuditLog::EVENT_LOGIN,
+                status: AuthAuditLog::STATUS_FAILED,
+                user: $user,
+                email: $user->email,
+            );
+
+            return response()->json([
+                'message' => 'Email verification is required before login.',
+            ], 403);
         }
 
         $user->tokens()->delete();

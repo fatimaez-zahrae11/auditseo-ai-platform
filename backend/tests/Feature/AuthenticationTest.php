@@ -4,16 +4,21 @@ namespace Tests\Feature;
 
 use App\Models\AuthAuditLog;
 use App\Models\User;
+use Illuminate\Auth\Notifications\VerifyEmail;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\URL;
 use Tests\TestCase;
 
 class AuthenticationTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_a_user_can_register_and_receive_a_sanctum_token(): void
+    public function test_register_creates_an_unverified_user_and_sends_verification_without_a_token(): void
     {
+        Notification::fake();
+
         $response = $this->postJson('/api/register', [
             'name' => 'Test User',
             'email' => 'test@example.com',
@@ -22,15 +27,18 @@ class AuthenticationTest extends TestCase
 
         $response
             ->assertCreated()
-            ->assertJsonStructure(['message', 'user' => ['id', 'name', 'email'], 'token'])
-            ->assertJsonMissingPath('user.password');
+            ->assertExactJson([
+                'message' => 'Registration successful. Please verify your email before logging in.',
+            ])
+            ->assertJsonMissingPath('token');
 
         $user = User::where('email', 'test@example.com')->firstOrFail();
 
         $this->assertTrue(Hash::check('Password1', $user->password));
         $this->assertNotSame('Password1', $user->password);
-        $this->assertDatabaseCount('personal_access_tokens', 1);
-        $this->assertNotNull($user->tokens()->firstOrFail()->expires_at);
+        $this->assertFalse($user->hasVerifiedEmail());
+        $this->assertDatabaseCount('personal_access_tokens', 0);
+        Notification::assertSentTo($user, VerifyEmail::class);
     }
 
     public function test_a_user_can_login_with_valid_credentials(): void
@@ -62,6 +70,124 @@ class AuthenticationTest extends TestCase
         $this->assertNotNull($auditLog->ip_address);
         $this->assertStringNotContainsString('Password1', $auditLog->toJson());
         $this->assertStringNotContainsString($response->json('token'), $auditLog->toJson());
+    }
+
+    public function test_unverified_users_cannot_login_or_receive_a_token(): void
+    {
+        $user = User::factory()->unverified()->create([
+            'email' => 'unverified@example.com',
+            'password' => Hash::make('Password1'),
+        ]);
+
+        $this->postJson('/api/login', [
+            'email' => 'unverified@example.com',
+            'password' => 'Password1',
+        ])
+            ->assertForbidden()
+            ->assertExactJson([
+                'message' => 'Email verification is required before login.',
+            ]);
+
+        $this->assertDatabaseCount('personal_access_tokens', 0);
+        $this->assertDatabaseHas('auth_audit_logs', [
+            'user_id' => $user->id,
+            'event' => AuthAuditLog::EVENT_LOGIN,
+            'status' => AuthAuditLog::STATUS_FAILED,
+        ]);
+    }
+
+    public function test_signed_verification_route_marks_the_email_as_verified(): void
+    {
+        $user = User::factory()->unverified()->create();
+        $verificationUrl = URL::temporarySignedRoute(
+            'verification.verify',
+            now()->addMinutes(60),
+            [
+                'id' => $user->id,
+                'hash' => sha1($user->getEmailForVerification()),
+            ],
+        );
+
+        $this->getJson($verificationUrl)
+            ->assertOk()
+            ->assertExactJson([
+                'message' => 'Email verified successfully. You may now log in.',
+            ]);
+
+        $this->assertTrue($user->fresh()->hasVerifiedEmail());
+    }
+
+    public function test_verification_route_rejects_invalid_signatures_and_email_hashes(): void
+    {
+        $user = User::factory()->unverified()->create();
+        $correctHash = sha1($user->getEmailForVerification());
+        $unsignedUrl = route('verification.verify', [
+            'id' => $user->id,
+            'hash' => $correctHash,
+        ]);
+        $wrongHashUrl = URL::temporarySignedRoute(
+            'verification.verify',
+            now()->addMinutes(60),
+            [
+                'id' => $user->id,
+                'hash' => sha1('wrong@example.com'),
+            ],
+        );
+
+        foreach ([$unsignedUrl, $wrongHashUrl] as $verificationUrl) {
+            $this->getJson($verificationUrl)
+                ->assertForbidden()
+                ->assertExactJson([
+                    'message' => 'The verification link is invalid or has expired.',
+                ]);
+        }
+
+        $this->assertFalse($user->fresh()->hasVerifiedEmail());
+    }
+
+    public function test_verification_notification_can_be_resent_without_revealing_account_existence(): void
+    {
+        Notification::fake();
+        $user = User::factory()->unverified()->create([
+            'email' => 'unverified@example.com',
+        ]);
+
+        $existingResponse = $this->postJson('/api/email/verification-notification', [
+            'email' => 'unverified@example.com',
+        ]);
+        $unknownResponse = $this->postJson('/api/email/verification-notification', [
+            'email' => 'unknown@example.com',
+        ]);
+
+        $existingResponse
+            ->assertOk()
+            ->assertExactJson([
+                'message' => 'If the email is registered and unverified, a verification link has been sent.',
+            ]);
+        $unknownResponse
+            ->assertOk()
+            ->assertExactJson([
+                'message' => 'If the email is registered and unverified, a verification link has been sent.',
+            ]);
+
+        $this->assertSame($existingResponse->getContent(), $unknownResponse->getContent());
+        Notification::assertSentTo($user, VerifyEmail::class);
+        Notification::assertCount(1);
+    }
+
+    public function test_sensitive_routes_reject_an_unverified_user_with_a_token(): void
+    {
+        $user = User::factory()->unverified()->create();
+        $token = $user->createToken('unverified-token')->plainTextToken;
+
+        foreach (['/api/dashboard', '/api/audits', '/api/audits/1'] as $uri) {
+            $this->app['auth']->forgetGuards();
+
+            $this->withToken($token)
+                ->getJson($uri)
+                ->assertForbidden()
+                ->assertExactJson(['message' => 'Forbidden.']);
+        }
     }
 
     public function test_login_revokes_the_users_old_tokens(): void
@@ -161,7 +287,7 @@ class AuthenticationTest extends TestCase
     {
         $this->getJson('/api/me')->assertUnauthorized();
 
-        $user = User::factory()->create();
+        $user = User::factory()->unverified()->create();
         $token = $user->createToken('test-token')->plainTextToken;
 
         $this->withToken($token)
@@ -175,7 +301,7 @@ class AuthenticationTest extends TestCase
     {
         $this->postJson('/api/logout')->assertUnauthorized();
 
-        $user = User::factory()->create();
+        $user = User::factory()->unverified()->create();
         $currentToken = $user->createToken('current-token');
         $otherToken = $user->createToken('other-token');
 

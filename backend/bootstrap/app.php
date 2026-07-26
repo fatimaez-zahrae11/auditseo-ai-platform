@@ -9,6 +9,7 @@ use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Exceptions\ThrottleRequestsException;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -54,6 +55,10 @@ return Application::configure(basePath: dirname(__DIR__))
                 $exception instanceof ThrottleRequestsException => response()->json([
                     'message' => 'Too many requests.',
                 ], 429),
+                $exception instanceof HttpExceptionInterface
+                    && $exception->getStatusCode() === 403 => response()->json([
+                        'message' => 'Forbidden.',
+                    ], 403),
                 default => response()->json([
                     'message' => 'Internal server error.',
                 ], 500),
