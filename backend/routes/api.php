@@ -14,16 +14,19 @@ Route::middleware('throttle:5,1')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
 });
 
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware(['auth:sanctum', 'throttle:30,1'])->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::post('/logout-all', [AuthController::class, 'logoutAll']);
     Route::get('/dashboard', [DashboardController::class, 'index']);
 
-    Route::post('/audits', [AuditController::class, 'store']);
+    Route::post('/audits', [AuditController::class, 'store'])
+        ->withoutMiddleware('throttle:30,1')
+        ->middleware('throttle:10,60');
     Route::get('/audits', [AuditController::class, 'index']);
     Route::get('/audits/{id}', [AuditController::class, 'show']);
     Route::get('/audits/{audit}/recommendations', [AiRecommendationController::class, 'index']);
     Route::post('/audits/{audit}/recommendations', [AiRecommendationController::class, 'store'])
+        ->withoutMiddleware('throttle:30,1')
         ->middleware('throttle:5,1');
 });
