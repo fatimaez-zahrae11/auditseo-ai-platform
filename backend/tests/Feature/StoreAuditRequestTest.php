@@ -8,9 +8,11 @@ use App\Security\DnsResolver;
 use App\Security\PublicUrlPolicy;
 use App\Services\Seo\SeoCrawlerService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
+use Monolog\Handler\TestHandler;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -43,6 +45,77 @@ class StoreAuditRequestTest extends TestCase
 
         $this->assertDatabaseCount('domains', 0);
         $this->assertDatabaseCount('audits', 0);
+    }
+
+    #[DataProvider('urlUserInformationProvider')]
+    public function test_url_user_information_is_rejected_without_persistence_or_logging(
+        string $url,
+        string $username,
+        ?string $password,
+    ): void {
+        $crawler = Mockery::mock(SeoCrawlerService::class);
+        $crawler->shouldNotReceive('crawl');
+        $this->app->instance(SeoCrawlerService::class, $crawler);
+        Sanctum::actingAs(User::factory()->create());
+
+        $logHandler = new TestHandler;
+        $logger = Log::channel()->getLogger();
+        $logger->pushHandler($logHandler);
+
+        try {
+            $response = $this->postJson('/api/audits', ['url' => $url]);
+        } finally {
+            $logger->popHandler();
+        }
+
+        $response
+            ->assertUnprocessable()
+            ->assertExactJson([
+                'message' => 'The given data was invalid.',
+                'errors' => [
+                    'url' => [PublicUrlPolicy::VALIDATION_MESSAGE],
+                ],
+            ]);
+        $this->assertStringNotContainsString($username, $response->getContent());
+        if ($password !== null) {
+            $this->assertStringNotContainsString($password, $response->getContent());
+        }
+
+        $loggedData = array_map(
+            fn ($record): array => [
+                'message' => $record->message,
+                'context' => $record->context,
+                'extra' => $record->extra,
+            ],
+            $logHandler->getRecords(),
+        );
+        $serializedLogs = json_encode($loggedData, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString($username, $serializedLogs);
+        if ($password !== null) {
+            $this->assertStringNotContainsString($password, $serializedLogs);
+        }
+
+        $this->assertDatabaseCount('domains', 0);
+        $this->assertDatabaseCount('audits', 0);
+    }
+
+    /**
+     * @return array<string, array{string, string, string|null}>
+     */
+    public static function urlUserInformationProvider(): array
+    {
+        return [
+            'username only' => [
+                'https://sec11-user@example.com/audit',
+                'sec11-user',
+                null,
+            ],
+            'username and password' => [
+                'https://sec11-user:SEC11-secret@example.com/audit',
+                'sec11-user',
+                'SEC11-secret',
+            ],
+        ];
     }
 
     /**
@@ -107,7 +180,7 @@ class StoreAuditRequestTest extends TestCase
         $this->assertArrayHasKey('url', $validator->errors()->toArray());
     }
 
-    public function test_a_public_https_url_passes_request_validation(): void
+    public function test_a_public_https_url_without_credentials_passes_request_validation(): void
     {
         $request = new StoreAuditRequest;
         $validator = Validator::make(
