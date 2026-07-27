@@ -408,6 +408,99 @@ class AuthenticationTest extends TestCase
         $this->assertDatabaseCount('auth_audit_logs', 5);
     }
 
+    public function test_login_is_rate_limited_when_the_same_ip_rotates_email_addresses(): void
+    {
+        $ip = '198.51.100.10';
+
+        foreach (range(1, 20) as $attempt) {
+            $this->withServerVariables(['REMOTE_ADDR' => $ip])
+                ->postJson('/api/login', [
+                    'email' => "unknown{$attempt}@example.com",
+                    'password' => 'WrongPassword1',
+                ])
+                ->assertUnprocessable()
+                ->assertExactJson(['message' => 'Invalid credentials.']);
+        }
+
+        $this->withServerVariables(['REMOTE_ADDR' => $ip])
+            ->postJson('/api/login', [
+                'email' => 'another-unknown@example.com',
+                'password' => 'WrongPassword1',
+            ])
+            ->assertTooManyRequests();
+
+        $this->assertDatabaseCount('auth_audit_logs', 20);
+    }
+
+    public function test_login_rate_limits_are_independent_between_ip_addresses(): void
+    {
+        $user = User::factory()->create([
+            'email' => 'test@example.com',
+            'password' => Hash::make('Password1'),
+        ]);
+
+        foreach (range(1, 5) as $attempt) {
+            $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.20'])
+                ->postJson('/api/login', [
+                    'email' => $user->email,
+                    'password' => "WrongPassword{$attempt}",
+                ])
+                ->assertUnprocessable();
+        }
+
+        $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.20'])
+            ->postJson('/api/login', [
+                'email' => $user->email,
+                'password' => 'WrongPassword6',
+            ])
+            ->assertTooManyRequests();
+
+        $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.21'])
+            ->postJson('/api/login', [
+                'email' => $user->email,
+                'password' => 'Password1',
+            ])
+            ->assertOk()
+            ->assertJsonPath('message', 'Login successful.');
+
+        $this->assertDatabaseCount('auth_audit_logs', 6);
+        $this->assertDatabaseHas('auth_audit_logs', [
+            'user_id' => $user->id,
+            'event' => AuthAuditLog::EVENT_LOGIN,
+            'ip_address' => '198.51.100.21',
+            'status' => AuthAuditLog::STATUS_SUCCESS,
+        ]);
+    }
+
+    public function test_successful_login_is_allowed_within_the_ip_limit(): void
+    {
+        $ip = '198.51.100.30';
+        $user = User::factory()->create([
+            'email' => 'test@example.com',
+            'password' => Hash::make('Password1'),
+        ]);
+
+        foreach (range(1, 19) as $attempt) {
+            $this->withServerVariables(['REMOTE_ADDR' => $ip])
+                ->postJson('/api/login', [
+                    'email' => "unknown{$attempt}@example.com",
+                    'password' => 'WrongPassword1',
+                ])
+                ->assertUnprocessable();
+        }
+
+        $this->withServerVariables(['REMOTE_ADDR' => $ip])
+            ->postJson('/api/login', [
+                'email' => $user->email,
+                'password' => 'Password1',
+            ])
+            ->assertOk()
+            ->assertJsonPath('message', 'Login successful.');
+
+        $this->assertDatabaseCount('auth_audit_logs', 20);
+        $this->assertDatabaseCount('personal_access_tokens', 1);
+    }
+
     public function test_register_rate_limit_does_not_block_login(): void
     {
         User::factory()->create([
