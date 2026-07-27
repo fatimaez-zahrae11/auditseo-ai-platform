@@ -8,7 +8,13 @@ use App\Models\User;
 use App\Security\DnsResolver;
 use App\Services\Seo\SeoCrawlerService;
 use Exception;
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Psr7\InflateStream;
+use GuzzleHttp\Psr7\PumpStream;
+use GuzzleHttp\Psr7\Response as Psr7Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
@@ -205,6 +211,244 @@ class AuditApiTest extends TestCase
 
         $this->assertStringNotContainsString('Sensitive transport details', $response->getContent());
         $this->assertDatabaseCount('audits', 0);
+    }
+
+    public function test_an_oversized_streamed_redirect_body_is_interrupted_and_rejected(): void
+    {
+        $progress = (object) ['bytes' => 0];
+        $this->replaceHttpFake(fn (Request $request) => $request->url() === 'https://example.com/start'
+            ? $this->streamedResponse(
+                6_000_000,
+                ['Location' => 'https://example.com/page'],
+                $progress,
+                302,
+            )
+            : Http::response($this->completeHtml()));
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/start']);
+
+        $response
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
+        $this->assertSame(5_000_001, $progress->bytes);
+        $this->assertLessThan(6_000_000, $progress->bytes);
+        $this->assertDatabaseCount('audits', 0);
+    }
+
+    public function test_a_misleading_content_length_does_not_bypass_the_html_limit(): void
+    {
+        $progress = (object) ['bytes' => 0];
+        $this->replaceHttpFake(fn () => $this->streamedResponse(
+            6_000_000,
+            ['Content-Length' => '100', 'Content-Type' => 'text/html'],
+            $progress,
+        ));
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
+
+        $this->assertSame(5_000_001, $progress->bytes);
+        $this->assertLessThan(6_000_000, $progress->bytes);
+    }
+
+    public function test_an_oversized_content_length_is_rejected_before_the_body_is_read(): void
+    {
+        $progress = (object) ['bytes' => 0];
+        $this->replaceHttpFake(fn () => $this->streamedResponse(
+            6_000_000,
+            ['Content-Length' => '6000000', 'Content-Type' => 'text/html'],
+            $progress,
+        ));
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
+
+        $this->assertSame(0, $progress->bytes);
+    }
+
+    public function test_an_oversized_chunked_html_response_is_rejected(): void
+    {
+        $progress = (object) ['bytes' => 0];
+        $this->replaceHttpFake(fn () => $this->streamedResponse(
+            6_000_000,
+            ['Transfer-Encoding' => 'chunked', 'Content-Type' => 'text/html'],
+            $progress,
+        ));
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
+
+        $this->assertSame(5_000_001, $progress->bytes);
+    }
+
+    public function test_an_oversized_compressed_html_response_is_rejected_after_decoding(): void
+    {
+        $compressed = gzencode(str_repeat('x', 6_000_000));
+        $this->assertNotFalse($compressed);
+        $progress = (object) ['bytes' => 0];
+        $this->replaceHttpFake(function () use ($compressed, $progress) {
+            $encodedResponse = $this->streamedResponse(
+                strlen($compressed),
+                [],
+                $progress,
+                200,
+                $compressed,
+            )->wait();
+
+            return Create::promiseFor(new Psr7Response(
+                200,
+                [
+                    'Content-Type' => 'text/html',
+                    'X-Encoded-Content-Encoding' => 'gzip',
+                    'X-Encoded-Content-Length' => (string) strlen($compressed),
+                ],
+                new InflateStream($encodedResponse->getBody()),
+            ));
+        });
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
+
+        $this->assertGreaterThan(0, $progress->bytes);
+        $this->assertLessThan(strlen($compressed) + 1, $progress->bytes);
+    }
+
+    public function test_a_small_streamed_html_response_still_creates_an_audit(): void
+    {
+        $body = $this->completeHtml();
+        $progress = (object) ['bytes' => 0];
+        $this->replaceHttpFake(function (Request $request) use ($body, $progress) {
+            if ($request->url() === 'https://example.com/page') {
+                return $this->streamedResponse(
+                    strlen($body),
+                    ['Content-Length' => (string) strlen($body), 'Content-Type' => 'text/html'],
+                    $progress,
+                    200,
+                    $body,
+                );
+            }
+
+            if (str_ends_with($request->url(), '/robots.txt')) {
+                return Http::response('User-agent: *');
+            }
+
+            if (str_ends_with($request->url(), '/sitemap.xml')) {
+                return Http::response('<urlset></urlset>');
+            }
+
+            return Http::response('', 200);
+        });
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.title', 'Example Page')
+            ->assertJsonPath('raw_data.page_size_bytes', strlen($body));
+
+        $this->assertSame(strlen($body), $progress->bytes);
+    }
+
+    public function test_oversized_robots_txt_is_interrupted_and_ignored(): void
+    {
+        $progress = (object) ['bytes' => 0];
+        $this->fakeSecondaryResourceStream('/robots.txt', 600_000, [], $progress);
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.robots_txt_found', false)
+            ->assertJsonPath('raw_data.robots_txt_status_code', null);
+
+        $this->assertSame(512_001, $progress->bytes);
+        $this->assertLessThan(600_000, $progress->bytes);
+    }
+
+    public function test_oversized_sitemap_is_interrupted_and_ignored(): void
+    {
+        $progress = (object) ['bytes' => 0];
+        $this->fakeSecondaryResourceStream('/sitemap.xml', 11_000_000, [], $progress);
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.sitemap_xml_found', false)
+            ->assertJsonPath('raw_data.sitemap_xml_status_code', null);
+
+        $this->assertSame(10_000_001, $progress->bytes);
+        $this->assertLessThan(11_000_000, $progress->bytes);
+    }
+
+    public function test_oversized_child_sitemap_is_interrupted_and_skipped(): void
+    {
+        $progress = (object) ['bytes' => 0];
+        $this->replaceHttpFake(function (Request $request) use ($progress) {
+            if ($request->url() === 'https://example.com/child.xml') {
+                return $this->streamedResponse(11_000_000, [], $progress);
+            }
+
+            if (str_ends_with($request->url(), '/robots.txt')) {
+                return Http::response('User-agent: *');
+            }
+
+            if (str_ends_with($request->url(), '/sitemap.xml')) {
+                return Http::response(
+                    '<sitemapindex><sitemap><loc>https://example.com/child.xml</loc></sitemap></sitemapindex>',
+                );
+            }
+
+            return Http::response($this->completeHtml(), 200, ['Content-Type' => 'text/html']);
+        });
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.sitemap_xml_is_valid', true)
+            ->assertJsonPath('raw_data.sitemap_urls_count', 0);
+
+        $this->assertSame(10_000_001, $progress->bytes);
+    }
+
+    public function test_oversized_checked_link_body_is_interrupted_and_marked_broken(): void
+    {
+        $link = 'https://external.example/large';
+        $progress = (object) ['bytes' => 0];
+        $this->replaceHttpFake(function (Request $request) use ($link, $progress) {
+            if ($request->url() === $link) {
+                return $this->streamedResponse(100_000, [], $progress);
+            }
+
+            if (str_ends_with($request->url(), '/robots.txt')) {
+                return Http::response('User-agent: *');
+            }
+
+            if (str_ends_with($request->url(), '/sitemap.xml')) {
+                return Http::response('<urlset></urlset>');
+            }
+
+            return Http::response(
+                $this->htmlWithLinks('<a href="'.$link.'">Large response</a>'),
+                200,
+                ['Content-Type' => 'text/html'],
+            );
+        });
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.checked_links_count', 1)
+            ->assertJsonPath('raw_data.broken_links_count', 1);
+
+        $this->assertSame(64_001, $progress->bytes);
+        $this->assertLessThan(100_000, $progress->bytes);
     }
 
     public function test_robots_txt_and_sitemap_xml_availability_are_stored_in_raw_data(): void
@@ -1951,6 +2195,78 @@ class AuditApiTest extends TestCase
             'performance_score' => 0,
             'raw_data' => null,
         ]);
+    }
+
+    /**
+     * @param  array<string, string>  $headers
+     */
+    private function streamedResponse(
+        int $totalBytes,
+        array $headers,
+        object $progress,
+        int $status = 200,
+        string $contents = 'x',
+    ): PromiseInterface {
+        $remainingBytes = $totalBytes;
+        $offset = 0;
+        $useExactContents = strlen($contents) === $totalBytes;
+        $stream = new PumpStream(function (int $requestedBytes) use (
+            &$remainingBytes,
+            &$offset,
+            $progress,
+            $contents,
+            $useExactContents,
+        ): ?string {
+            if ($remainingBytes === 0) {
+                return null;
+            }
+
+            $bytes = min($requestedBytes, $remainingBytes);
+            $chunk = $useExactContents
+                ? substr($contents, $offset, $bytes)
+                : str_repeat($contents, (int) ceil($bytes / strlen($contents)));
+            $chunk = substr($chunk, 0, $bytes);
+            $remainingBytes -= $bytes;
+            $offset += $bytes;
+            $progress->bytes += $bytes;
+
+            return $chunk;
+        });
+
+        return Create::promiseFor(new Psr7Response($status, $headers, $stream));
+    }
+
+    /**
+     * @param  array<string, string>  $headers
+     */
+    private function fakeSecondaryResourceStream(
+        string $path,
+        int $totalBytes,
+        array $headers,
+        object $progress,
+    ): void {
+        $this->replaceHttpFake(function (Request $request) use ($path, $totalBytes, $headers, $progress) {
+            if (str_ends_with($request->url(), $path)) {
+                return $this->streamedResponse($totalBytes, $headers, $progress);
+            }
+
+            if (str_ends_with($request->url(), '/robots.txt')) {
+                return Http::response('User-agent: *');
+            }
+
+            if (str_ends_with($request->url(), '/sitemap.xml')) {
+                return Http::response('<urlset></urlset>');
+            }
+
+            return Http::response($this->completeHtml(), 200, ['Content-Type' => 'text/html']);
+        });
+    }
+
+    private function replaceHttpFake(callable $callback): void
+    {
+        $factory = new HttpFactory($this->app['events']);
+        Http::swap($factory);
+        $factory->fake($callback);
     }
 
     private function completeHtml(): string

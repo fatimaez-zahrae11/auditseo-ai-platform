@@ -17,6 +17,16 @@ class SeoCrawlerService
 {
     private const MAX_REDIRECTS = 10;
 
+    private const MAX_HTML_BYTES = 5_000_000;
+
+    private const MAX_ROBOTS_BYTES = 512_000;
+
+    private const MAX_SITEMAP_BYTES = 10_000_000;
+
+    private const MAX_LINK_RESPONSE_BYTES = 64_000;
+
+    private const DOWNLOAD_CHUNK_BYTES = 8192;
+
     private const MAX_CHECKED_LINKS = 25;
 
     private const MAX_BROKEN_LINKS_SAMPLE = 5;
@@ -73,9 +83,8 @@ class SeoCrawlerService
     public function crawl(string $url): array
     {
         $startedAt = hrtime(true);
-        [$response, $finalUrl, $redirectCount] = $this->fetchPage($url);
+        [$response, $html, $finalUrl, $redirectCount] = $this->fetchPage($url);
         $responseTimeMs = (int) round((hrtime(true) - $startedAt) / 1_000_000);
-        $html = $response->body();
 
         $data = $this->extractSeoData($html, $finalUrl);
         $data = [
@@ -121,7 +130,7 @@ class SeoCrawlerService
     }
 
     /**
-     * @return array{Response, string, int}
+     * @return array{Response, string, string, int}
      */
     private function fetchPage(string $url): array
     {
@@ -130,15 +139,19 @@ class SeoCrawlerService
 
         while (true) {
             $target = $this->urlPolicy->validate($currentUrl);
-            $response = $this->httpClient($target)->get($currentUrl);
+            [$response, $body] = $this->downloadResponse(
+                $this->httpClient($target),
+                $currentUrl,
+                self::MAX_HTML_BYTES,
+            );
 
             if (! $this->isRedirect($response)) {
-                return [$response, $currentUrl, $redirectCount];
+                return [$response, $body, $currentUrl, $redirectCount];
             }
 
             $location = trim((string) $response->header('Location'));
             if ($location === '') {
-                return [$response, $currentUrl, $redirectCount];
+                return [$response, $body, $currentUrl, $redirectCount];
             }
 
             if ($redirectCount >= self::MAX_REDIRECTS) {
@@ -207,7 +220,10 @@ class SeoCrawlerService
         ];
 
         try {
-            [$response, $finalRobotsUrl] = $this->fetchResource($robotsUrl);
+            [$response, $contents, $finalRobotsUrl] = $this->fetchResource(
+                $robotsUrl,
+                self::MAX_ROBOTS_BYTES,
+            );
         } catch (ConnectionException|RuntimeException|ValidationException) {
             return $data;
         }
@@ -218,7 +234,7 @@ class SeoCrawlerService
             return $data;
         }
 
-        $parsed = $this->parseRobotsTxt($response->body(), $finalRobotsUrl);
+        $parsed = $this->parseRobotsTxt($contents, $finalRobotsUrl);
         $data['robots_txt_sitemap_urls'] = $parsed['sitemap_urls'];
         $data['robots_txt_disallow_rules_count'] = count($parsed['disallow_rules']);
 
@@ -355,7 +371,10 @@ class SeoCrawlerService
         $sitemapUrl = $robotsSitemapUrls[0] ?? $fallbackUrl;
 
         try {
-            [$response, $finalSitemapUrl] = $this->fetchResource($sitemapUrl);
+            [$response, $contents, $finalSitemapUrl] = $this->fetchResource(
+                $sitemapUrl,
+                self::MAX_SITEMAP_BYTES,
+            );
         } catch (ConnectionException|RuntimeException|ValidationException) {
             return $data;
         }
@@ -366,7 +385,7 @@ class SeoCrawlerService
             return $data;
         }
 
-        $parsed = $this->parseSitemapXml($response->body());
+        $parsed = $this->parseSitemapXml($contents);
         if ($parsed === null) {
             return $data;
         }
@@ -387,7 +406,10 @@ class SeoCrawlerService
                 }
 
                 try {
-                    [$childResponse, $finalChildUrl] = $this->fetchResource($childUrl);
+                    [$childResponse, $childContents, $finalChildUrl] = $this->fetchResource(
+                        $childUrl,
+                        self::MAX_SITEMAP_BYTES,
+                    );
                 } catch (ConnectionException|RuntimeException|ValidationException) {
                     continue;
                 }
@@ -396,7 +418,7 @@ class SeoCrawlerService
                     continue;
                 }
 
-                $childSitemap = $this->parseSitemapXml($childResponse->body());
+                $childSitemap = $this->parseSitemapXml($childContents);
                 if ($childSitemap !== null && $childSitemap['type'] === 'urlset') {
                     $this->addSitemapLocations($sitemapUrls, $childSitemap['locations'], $finalChildUrl);
                 }
@@ -553,13 +575,12 @@ class SeoCrawlerService
 
             try {
                 $startedAt = hrtime(true);
-                [$response, $finalPageUrl] = $this->fetchCrawlPage($pageUrl);
+                [$response, $body, $finalPageUrl] = $this->fetchCrawlPage($pageUrl);
                 $responseTimeMs = (int) round((hrtime(true) - $startedAt) / 1_000_000);
             } catch (ConnectionException|RuntimeException|ValidationException) {
                 continue;
             }
 
-            $body = $response->body();
             $pageData = $this->extractSeoData($body, $finalPageUrl);
             $pageData['response_time_ms'] = max(0, $responseTimeMs);
             $pageData['page_size_bytes'] = strlen($body);
@@ -939,24 +960,28 @@ class SeoCrawlerService
     }
 
     /**
-     * @return array{Response, string}
+     * @return array{Response, string, string}
      */
-    private function fetchResource(string $url): array
+    private function fetchResource(string $url, int $maxBytes): array
     {
         $currentUrl = $url;
         $redirectCount = 0;
 
         while (true) {
             $target = $this->urlPolicy->validate($currentUrl);
-            $response = $this->httpClient($target)->get($currentUrl);
+            [$response, $body] = $this->downloadResponse(
+                $this->httpClient($target),
+                $currentUrl,
+                $maxBytes,
+            );
 
             if (! $this->isRedirect($response)) {
-                return [$response, $currentUrl];
+                return [$response, $body, $currentUrl];
             }
 
             $location = trim((string) $response->header('Location'));
             if ($location === '') {
-                return [$response, $currentUrl];
+                return [$response, $body, $currentUrl];
             }
 
             if ($redirectCount >= self::MAX_REDIRECTS) {
@@ -965,7 +990,7 @@ class SeoCrawlerService
 
             $redirectUrl = $this->resolveCheckableHttpUrl($currentUrl, $location);
             if ($redirectUrl === null) {
-                return [$response, $currentUrl];
+                return [$response, $body, $currentUrl];
             }
 
             $currentUrl = $redirectUrl;
@@ -1463,7 +1488,11 @@ class SeoCrawlerService
 
         while (true) {
             $target = $this->urlPolicy->validate($currentUrl);
-            $response = $this->linkCheckHttpClient($target)->get($currentUrl);
+            [$response] = $this->downloadResponse(
+                $this->linkCheckHttpClient($target),
+                $currentUrl,
+                self::MAX_LINK_RESPONSE_BYTES,
+            );
 
             if (! $this->isRedirect($response)) {
                 return $response;
@@ -1489,7 +1518,7 @@ class SeoCrawlerService
     }
 
     /**
-     * @return array{Response, string}
+     * @return array{Response, string, string}
      */
     private function fetchCrawlPage(string $url): array
     {
@@ -1498,15 +1527,19 @@ class SeoCrawlerService
 
         while (true) {
             $target = $this->urlPolicy->validate($currentUrl);
-            $response = $this->linkCheckHttpClient($target)->get($currentUrl);
+            [$response, $body] = $this->downloadResponse(
+                $this->linkCheckHttpClient($target),
+                $currentUrl,
+                self::MAX_HTML_BYTES,
+            );
 
             if (! $this->isRedirect($response)) {
-                return [$response, $currentUrl];
+                return [$response, $body, $currentUrl];
             }
 
             $location = trim((string) $response->header('Location'));
             if ($location === '') {
-                return [$response, $currentUrl];
+                return [$response, $body, $currentUrl];
             }
 
             if ($redirectCount >= self::MAX_CRAWL_REDIRECTS) {
@@ -1515,11 +1548,86 @@ class SeoCrawlerService
 
             $redirectUrl = $this->resolveCheckableHttpUrl($currentUrl, $location);
             if ($redirectUrl === null) {
-                return [$response, $currentUrl];
+                return [$response, $body, $currentUrl];
             }
 
             $currentUrl = $redirectUrl;
             $redirectCount++;
+        }
+    }
+
+    /**
+     * @return array{Response, string}
+     */
+    private function downloadResponse(PendingRequest $client, string $url, int $maxBytes): array
+    {
+        $response = $client->withOptions(['stream' => true])->get($url);
+
+        try {
+            $this->rejectOversizedContentLength($response, $maxBytes);
+
+            $source = $response->toPsrResponse()->getBody();
+            $temporary = fopen("php://temp/maxmemory:{$maxBytes}", 'w+b');
+            if ($temporary === false) {
+                throw new RuntimeException('Unable to buffer the downloaded resource.');
+            }
+
+            try {
+                $downloadedBytes = 0;
+
+                while (! $source->eof()) {
+                    $remainingBytes = $maxBytes - $downloadedBytes;
+                    $chunk = $source->read(min(self::DOWNLOAD_CHUNK_BYTES, $remainingBytes + 1));
+
+                    if ($chunk === '') {
+                        if ($source->eof()) {
+                            break;
+                        }
+
+                        throw new RuntimeException('Unable to read the downloaded resource.');
+                    }
+
+                    $downloadedBytes += strlen($chunk);
+                    if ($downloadedBytes > $maxBytes) {
+                        throw new RuntimeException('The downloaded resource exceeded the size limit.');
+                    }
+
+                    if (fwrite($temporary, $chunk) !== strlen($chunk)) {
+                        throw new RuntimeException('Unable to buffer the downloaded resource.');
+                    }
+                }
+
+                rewind($temporary);
+                $body = stream_get_contents($temporary);
+                if ($body === false) {
+                    throw new RuntimeException('Unable to read the buffered resource.');
+                }
+
+                return [$response, $body];
+            } finally {
+                fclose($temporary);
+            }
+        } finally {
+            $response->close();
+        }
+    }
+
+    private function rejectOversizedContentLength(Response $response, int $maxBytes): void
+    {
+        foreach (['Content-Length', 'X-Encoded-Content-Length'] as $headerName) {
+            foreach ($response->toPsrResponse()->getHeader($headerName) as $header) {
+                foreach (explode(',', $header) as $value) {
+                    $value = ltrim(trim($value), '0');
+                    $value = $value === '' ? '0' : $value;
+                    $limit = (string) $maxBytes;
+
+                    if (ctype_digit($value)
+                        && (strlen($value) > strlen($limit)
+                            || (strlen($value) === strlen($limit) && strcmp($value, $limit) > 0))) {
+                        throw new RuntimeException('The downloaded resource exceeded the size limit.');
+                    }
+                }
+            }
         }
     }
 
@@ -1529,7 +1637,10 @@ class SeoCrawlerService
     private function performanceMetadata(Response $response, string $body): array
     {
         $contentType = $this->nullableTrimmed((string) $response->header('Content-Type'));
-        $contentEncoding = $this->nullableTrimmed((string) $response->header('Content-Encoding'));
+        $contentEncoding = $this->nullableTrimmed(
+            (string) ($response->header('Content-Encoding')
+                ?: $response->header('X-Encoded-Content-Encoding')),
+        );
         $cacheControl = $this->nullableTrimmed((string) $response->header('Cache-Control'));
         $expires = $this->nullableTrimmed((string) $response->header('Expires'));
         $etag = $this->nullableTrimmed((string) $response->header('ETag'));
