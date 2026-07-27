@@ -5,12 +5,15 @@ namespace Tests\Feature;
 use App\Models\Audit;
 use App\Models\Domain;
 use App\Models\User;
+use App\Security\DnsResolver;
 use App\Services\Seo\SeoCrawlerService;
 use Exception;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
+use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class AuditApiTest extends TestCase
@@ -51,6 +54,11 @@ class AuditApiTest extends TestCase
      */
     private array $redirects;
 
+    /**
+     * @var array<string, list<string>>
+     */
+    private array $dnsAnswers;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -69,6 +77,7 @@ class AuditApiTest extends TestCase
         ];
         $this->responseDelayMicroseconds = 0;
         $this->redirects = [];
+        $this->dnsAnswers = [];
         $this->linkStatuses = [];
         $aboutHtml = $this->contentHtml(
             'About AuditSEO Platform Overview',
@@ -86,6 +95,14 @@ class AuditApiTest extends TestCase
                 'status' => 200,
             ],
         ];
+
+        $resolver = Mockery::mock(DnsResolver::class);
+        $resolver->shouldReceive('resolve')
+            ->andReturnUsing(
+                fn (string $hostname): array => $this->dnsAnswers[$hostname]
+                    ?? ['93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946'],
+            );
+        $this->app->instance(DnsResolver::class, $resolver);
 
         Http::fake(function (Request $request) {
             if (isset($this->redirects[$request->url()])) {
@@ -1712,6 +1729,103 @@ class AuditApiTest extends TestCase
             fn (Request $request) => $request->url() === 'http://127.0.0.1/private',
         );
         $this->assertDatabaseCount('audits', 0);
+    }
+
+    #[DataProvider('blockedRedirectProvider')]
+    public function test_redirects_to_special_addresses_or_ports_are_blocked(string $destination): void
+    {
+        $this->redirects = [
+            'https://example.com/start' => [
+                'status' => 302,
+                'location' => $destination,
+            ],
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/start'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('url');
+
+        Http::assertSentCount(1);
+        Http::assertNotSent(fn (Request $request) => $request->url() === $destination);
+        $this->assertDatabaseCount('audits', 0);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function blockedRedirectProvider(): array
+    {
+        return [
+            'shared address space' => ['http://100.64.0.1/private'],
+            'benchmark network' => ['http://198.18.0.1/private'],
+            'non-standard port' => ['https://example.com:8443/private'],
+            'IPv6 loopback' => ['http://[::1]/private'],
+            'IPv6 private' => ['https://[fc00::1]/private'],
+            'IPv6 link-local' => ['http://[fe80::1]/private'],
+            'URL credentials' => ['https://user:password@example.com/private'],
+        ];
+    }
+
+    public function test_a_redirect_to_an_unresolved_hostname_is_blocked(): void
+    {
+        $destination = 'https://unresolved.example/private';
+        $this->dnsAnswers['unresolved.example'] = [];
+        $this->redirects = [
+            'https://example.com/start' => [
+                'status' => 302,
+                'location' => $destination,
+            ],
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/start'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('url');
+
+        Http::assertSentCount(1);
+        Http::assertNotSent(fn (Request $request) => $request->url() === $destination);
+    }
+
+    public function test_a_secondary_resource_redirect_to_a_special_address_is_not_followed(): void
+    {
+        $destination = 'http://100.64.0.1/robots.txt';
+        $this->redirects = [
+            'https://example.com/robots.txt' => [
+                'status' => 302,
+                'location' => $destination,
+            ],
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.robots_txt_found', false);
+
+        Http::assertNotSent(fn (Request $request) => $request->url() === $destination);
+    }
+
+    public function test_a_secondary_link_redirect_to_a_special_address_is_not_followed(): void
+    {
+        $link = 'https://external.example/link';
+        $destination = 'http://198.18.0.1/private';
+        $this->responseHtml = $this->htmlWithLinks(
+            '<a href="'.$link.'">External link</a>',
+        );
+        $this->redirects = [
+            $link => [
+                'status' => 302,
+                'location' => $destination,
+            ],
+        ];
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+            ->assertCreated()
+            ->assertJsonPath('raw_data.checked_links_count', 0);
+
+        Http::assertSent(fn (Request $request) => $request->url() === $link);
+        Http::assertNotSent(fn (Request $request) => $request->url() === $destination);
     }
 
     public function test_creating_an_audit_reuses_the_users_existing_domain(): void

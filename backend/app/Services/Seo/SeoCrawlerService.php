@@ -2,6 +2,7 @@
 
 namespace App\Services\Seo;
 
+use App\Security\PublicUrlPolicy;
 use DOMDocument;
 use DOMXPath;
 use Illuminate\Http\Client\ConnectionException;
@@ -63,6 +64,8 @@ class SeoCrawlerService
         'voir plus',
         'cliquez ici',
     ];
+
+    public function __construct(private readonly PublicUrlPolicy $urlPolicy) {}
 
     /**
      * @return array<string, mixed>
@@ -126,9 +129,8 @@ class SeoCrawlerService
         $redirectCount = 0;
 
         while (true) {
-            // Redirect targets need the same SSRF checks as the user-supplied URL.
-            $this->ensureUrlIsSafe($currentUrl);
-            $response = $this->httpClient()->get($currentUrl);
+            $target = $this->urlPolicy->validate($currentUrl);
+            $response = $this->httpClient($target)->get($currentUrl);
 
             if (! $this->isRedirect($response)) {
                 return [$response, $currentUrl, $redirectCount];
@@ -148,20 +150,32 @@ class SeoCrawlerService
         }
     }
 
-    private function httpClient(): PendingRequest
+    /**
+     * @param  array{host: string, port: int, addresses: list<string>, is_ip_literal: bool}  $target
+     */
+    private function httpClient(array $target): PendingRequest
     {
         return Http::timeout(10)
             ->connectTimeout(5)
             ->withUserAgent('AuditSEO-Crawler/2.0')
-            ->withOptions(['allow_redirects' => false]);
+            ->withOptions([
+                'allow_redirects' => false,
+                ...$this->urlPolicy->connectionOptions($target),
+            ]);
     }
 
-    private function linkCheckHttpClient(): PendingRequest
+    /**
+     * @param  array{host: string, port: int, addresses: list<string>, is_ip_literal: bool}  $target
+     */
+    private function linkCheckHttpClient(array $target): PendingRequest
     {
         return Http::timeout(3)
             ->connectTimeout(2)
             ->withUserAgent('AuditSEO-Crawler/2.0')
-            ->withOptions(['allow_redirects' => false]);
+            ->withOptions([
+                'allow_redirects' => false,
+                ...$this->urlPolicy->connectionOptions($target),
+            ]);
     }
 
     private function isRedirect(Response $response): bool
@@ -485,7 +499,6 @@ class SeoCrawlerService
 
         foreach (array_slice($urls, 0, self::MAX_CHECKED_SITEMAP_URLS) as $url) {
             try {
-                $this->ensureUrlIsSafe($url);
                 $response = $this->fetchLink($url);
             } catch (ValidationException) {
                 continue;
@@ -934,8 +947,8 @@ class SeoCrawlerService
         $redirectCount = 0;
 
         while (true) {
-            $this->ensureUrlIsSafe($currentUrl);
-            $response = $this->httpClient()->get($currentUrl);
+            $target = $this->urlPolicy->validate($currentUrl);
+            $response = $this->httpClient($target)->get($currentUrl);
 
             if (! $this->isRedirect($response)) {
                 return [$response, $currentUrl];
@@ -958,59 +971,6 @@ class SeoCrawlerService
             $currentUrl = $redirectUrl;
             $redirectCount++;
         }
-    }
-
-    private function ensureUrlIsSafe(string $url): void
-    {
-        $parts = parse_url($url);
-        $scheme = strtolower($parts['scheme'] ?? '');
-        $host = strtolower(trim($parts['host'] ?? '', '[]'));
-
-        if (! in_array($scheme, ['http', 'https'], true) || $host === '') {
-            $this->rejectUnsafeUrl();
-        }
-
-        if ($host === 'localhost' || str_ends_with($host, '.localhost')) {
-            $this->rejectUnsafeUrl();
-        }
-
-        foreach (['.local', '.internal', '.lan', '.home'] as $internalSuffix) {
-            if (str_ends_with($host, $internalSuffix)) {
-                $this->rejectUnsafeUrl();
-            }
-        }
-
-        if (filter_var($host, FILTER_VALIDATE_IP)) {
-            if (! $this->isPublicIp($host)) {
-                $this->rejectUnsafeUrl();
-            }
-
-            return;
-        }
-
-        $resolvedAddresses = gethostbynamel($host) ?: [];
-
-        foreach ($resolvedAddresses as $address) {
-            if (! $this->isPublicIp($address)) {
-                $this->rejectUnsafeUrl();
-            }
-        }
-    }
-
-    private function isPublicIp(string $address): bool
-    {
-        return filter_var(
-            $address,
-            FILTER_VALIDATE_IP,
-            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE,
-        ) !== false;
-    }
-
-    private function rejectUnsafeUrl(): never
-    {
-        throw ValidationException::withMessages([
-            'url' => ['The URL must point to a public HTTP or HTTPS address.'],
-        ]);
     }
 
     /**
@@ -1466,7 +1426,6 @@ class SeoCrawlerService
 
         foreach (array_slice($links, 0, self::MAX_CHECKED_LINKS) as $link) {
             try {
-                $this->ensureUrlIsSafe($link);
                 $response = $this->fetchLink($link);
             } catch (ValidationException) {
                 // A page cannot make the crawler request an unsafe link target.
@@ -1503,8 +1462,8 @@ class SeoCrawlerService
         $redirectCount = 0;
 
         while (true) {
-            $this->ensureUrlIsSafe($currentUrl);
-            $response = $this->linkCheckHttpClient()->get($currentUrl);
+            $target = $this->urlPolicy->validate($currentUrl);
+            $response = $this->linkCheckHttpClient($target)->get($currentUrl);
 
             if (! $this->isRedirect($response)) {
                 return $response;
@@ -1538,8 +1497,8 @@ class SeoCrawlerService
         $redirectCount = 0;
 
         while (true) {
-            $this->ensureUrlIsSafe($currentUrl);
-            $response = $this->linkCheckHttpClient()->get($currentUrl);
+            $target = $this->urlPolicy->validate($currentUrl);
+            $response = $this->linkCheckHttpClient($target)->get($currentUrl);
 
             if (! $this->isRedirect($response)) {
                 return [$response, $currentUrl];
