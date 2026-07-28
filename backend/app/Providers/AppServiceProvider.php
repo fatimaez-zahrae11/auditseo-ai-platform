@@ -14,6 +14,10 @@ class AppServiceProvider extends ServiceProvider
 
     private const LOGIN_ATTEMPTS_PER_IP = 20;
 
+    private const VERIFICATION_ATTEMPTS_PER_EMAIL_AND_IP = 5;
+
+    private const VERIFICATION_ATTEMPTS_PER_IP = 20;
+
     /**
      * Register any application services.
      */
@@ -45,8 +49,14 @@ class AppServiceProvider extends ServiceProvider
 
         RateLimiter::for('verification', function (Request $request) {
             $email = Str::lower(trim((string) $request->input('email')));
+            $ip = (string) $request->ip();
 
-            return Limit::perMinute(5)->by($email.'|'.$request->ip());
+            return [
+                Limit::perMinute(self::VERIFICATION_ATTEMPTS_PER_EMAIL_AND_IP)
+                    ->by('verification-email-ip:'.sha1($email.'|'.$ip)),
+                Limit::perMinute(self::VERIFICATION_ATTEMPTS_PER_IP)
+                    ->by('verification-ip:'.$ip),
+            ];
         });
     }
 }

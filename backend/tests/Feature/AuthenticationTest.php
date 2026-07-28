@@ -177,6 +177,97 @@ class AuthenticationTest extends TestCase
         Notification::assertCount(1);
     }
 
+    public function test_verification_resend_is_rate_limited_for_the_same_email_and_ip(): void
+    {
+        Notification::fake();
+        $ip = '198.51.100.40';
+        $user = User::factory()->unverified()->create([
+            'email' => 'unverified@example.com',
+        ]);
+        $genericResponse = [
+            'message' => 'If the email is registered and unverified, a verification link has been sent.',
+        ];
+
+        foreach (range(1, 5) as $attempt) {
+            $this->withServerVariables(['REMOTE_ADDR' => $ip])
+                ->postJson('/api/email/verification-notification', [
+                    'email' => $attempt % 2 === 0
+                        ? ' UNVERIFIED@Example.COM '
+                        : 'unverified@example.com',
+                ])
+                ->assertOk()
+                ->assertExactJson($genericResponse);
+        }
+
+        $this->withServerVariables(['REMOTE_ADDR' => $ip])
+            ->postJson('/api/email/verification-notification', [
+                'email' => 'unverified@example.com',
+            ])
+            ->assertTooManyRequests();
+
+        Notification::assertSentToTimes($user, VerifyEmail::class, 5);
+    }
+
+    public function test_verification_resend_is_rate_limited_when_one_ip_rotates_emails(): void
+    {
+        Notification::fake();
+        $ip = '198.51.100.41';
+        $genericResponse = [
+            'message' => 'If the email is registered and unverified, a verification link has been sent.',
+        ];
+
+        foreach (range(1, 20) as $attempt) {
+            $this->withServerVariables(['REMOTE_ADDR' => $ip])
+                ->postJson('/api/email/verification-notification', [
+                    'email' => "unknown{$attempt}@example.com",
+                ])
+                ->assertOk()
+                ->assertExactJson($genericResponse);
+        }
+
+        $this->withServerVariables(['REMOTE_ADDR' => $ip])
+            ->postJson('/api/email/verification-notification', [
+                'email' => 'another-unknown@example.com',
+            ])
+            ->assertTooManyRequests();
+
+        Notification::assertNothingSent();
+    }
+
+    public function test_verification_resend_ip_limits_are_independent(): void
+    {
+        Notification::fake();
+        $limitedIp = '198.51.100.42';
+        $independentIp = '198.51.100.43';
+        $genericResponse = [
+            'message' => 'If the email is registered and unverified, a verification link has been sent.',
+        ];
+
+        foreach (range(1, 20) as $attempt) {
+            $this->withServerVariables(['REMOTE_ADDR' => $limitedIp])
+                ->postJson('/api/email/verification-notification', [
+                    'email' => "limited{$attempt}@example.com",
+                ])
+                ->assertOk()
+                ->assertExactJson($genericResponse);
+        }
+
+        $this->withServerVariables(['REMOTE_ADDR' => $limitedIp])
+            ->postJson('/api/email/verification-notification', [
+                'email' => 'limited-again@example.com',
+            ])
+            ->assertTooManyRequests();
+
+        $this->withServerVariables(['REMOTE_ADDR' => $independentIp])
+            ->postJson('/api/email/verification-notification', [
+                'email' => 'unknown@example.com',
+            ])
+            ->assertOk()
+            ->assertExactJson($genericResponse);
+
+        Notification::assertNothingSent();
+    }
+
     public function test_sensitive_routes_reject_an_unverified_user_with_a_token(): void
     {
         $user = User::factory()->unverified()->create();
