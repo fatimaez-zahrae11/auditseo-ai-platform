@@ -37,6 +37,7 @@ class AiRecommendationService
     {
         $provider = (string) config('services.ai.provider');
         $baseUrl = (string) config('services.ai.base_url');
+        $allowedHosts = config('services.ai.allowed_hosts', []);
         $chatEndpoint = (string) config('services.ai.chat_endpoint');
         $model = (string) config('services.ai.model');
         $apiKey = (string) config('services.ai.api_key');
@@ -60,6 +61,8 @@ class AiRecommendationService
             throw new AiRecommendationException;
         }
 
+        $providerUrl = $this->validatedProviderUrl($baseUrl, $chatEndpoint, $allowedHosts);
+
         $audit->loadMissing(['domain', 'issues']);
         $prompt = $this->buildPrompt($audit);
         $promptSummary = sprintf(
@@ -76,6 +79,7 @@ class AiRecommendationService
                 ->timeout(120)
                 ->acceptJson()
                 ->withToken($apiKey)
+                ->withOptions(['allow_redirects' => false])
                 ->setHandler(new BoundedAiCurlHandler(
                     $maxResponseBytes,
                     fn (ResponseInterface $response) => $this->rejectOversizedContentLength(
@@ -83,7 +87,7 @@ class AiRecommendationService
                         $maxResponseBytes,
                     ),
                 ))
-                ->post(rtrim($baseUrl, '/').'/'.ltrim($chatEndpoint, '/'), [
+                ->post($providerUrl, [
                     'model' => $model,
                     'max_tokens' => $maxOutputTokens,
                     'messages' => [
@@ -148,6 +152,68 @@ class AiRecommendationService
             'prompt_summary' => $promptSummary,
             'generated_text' => trim($generatedText),
         ];
+    }
+
+    private function validatedProviderUrl(
+        string $baseUrl,
+        string $chatEndpoint,
+        mixed $configuredAllowedHosts,
+    ): string {
+        $baseUrl = trim($baseUrl);
+        $parts = parse_url($baseUrl);
+
+        if ($parts === false
+            || filter_var($baseUrl, FILTER_VALIDATE_URL) === false
+            || strtolower((string) ($parts['scheme'] ?? '')) !== 'https'
+            || ! isset($parts['host'])
+            || trim((string) $parts['host']) === ''
+            || array_key_exists('user', $parts)
+            || array_key_exists('pass', $parts)
+            || array_key_exists('query', $parts)
+            || array_key_exists('fragment', $parts)) {
+            throw new AiRecommendationException;
+        }
+
+        if (! is_array($configuredAllowedHosts) || $configuredAllowedHosts === []) {
+            throw new AiRecommendationException;
+        }
+
+        $allowedHosts = [];
+        foreach ($configuredAllowedHosts as $allowedHost) {
+            if (! is_string($allowedHost)) {
+                throw new AiRecommendationException;
+            }
+
+            $allowedHost = strtolower(trim($allowedHost));
+            if ($allowedHost === ''
+                || str_contains($allowedHost, '*')
+                || filter_var($allowedHost, FILTER_VALIDATE_IP) === false
+                    && filter_var($allowedHost, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
+                throw new AiRecommendationException;
+            }
+
+            $allowedHosts[] = $allowedHost;
+        }
+
+        $providerHost = strtolower((string) $parts['host']);
+        if (! in_array($providerHost, $allowedHosts, true)) {
+            throw new AiRecommendationException;
+        }
+
+        $providerUrl = rtrim($baseUrl, '/').'/'.ltrim(trim($chatEndpoint), '/');
+        $providerParts = parse_url($providerUrl);
+
+        if ($providerParts === false
+            || filter_var($providerUrl, FILTER_VALIDATE_URL) === false
+            || strtolower((string) ($providerParts['scheme'] ?? '')) !== 'https'
+            || strtolower((string) ($providerParts['host'] ?? '')) !== $providerHost
+            || array_key_exists('user', $providerParts)
+            || array_key_exists('pass', $providerParts)
+            || array_key_exists('fragment', $providerParts)) {
+            throw new AiRecommendationException;
+        }
+
+        return $providerUrl;
     }
 
     private function configuredLimit(string $key, int $default, int $absoluteMax): int

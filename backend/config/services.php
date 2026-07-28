@@ -38,6 +38,10 @@ return [
     'ai' => [
         'provider' => env('AI_PROVIDER'),
         'base_url' => env('AI_BASE_URL'),
+        'allowed_hosts' => array_values(array_filter(array_map(
+            static fn (string $host): string => strtolower(trim($host)),
+            explode(',', (string) env('AI_ALLOWED_HOSTS', '')),
+        ))),
         'chat_endpoint' => env('AI_CHAT_ENDPOINT'),
         'model' => env('AI_MODEL'),
         'api_key' => env('AI_API_KEY'),

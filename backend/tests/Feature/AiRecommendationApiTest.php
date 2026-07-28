@@ -44,6 +44,7 @@ class AiRecommendationApiTest extends TestCase
         Config::set('services.ai', [
             'provider' => 'test-provider',
             'base_url' => 'https://ai.example.test',
+            'allowed_hosts' => ['ai.example.test'],
             'chat_endpoint' => '/v1/chat/completions',
             'model' => self::AI_MODEL,
             'api_key' => self::AI_KEY,
@@ -167,6 +168,128 @@ class AiRecommendationApiTest extends TestCase
             'error_message' => null,
         ]);
         $this->assertNotEmpty($response->json('recommendation.prompt_summary'));
+    }
+
+    public function test_valid_https_allowed_provider_host_generates_a_recommendation(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertCreated()
+            ->assertJsonPath(
+                'recommendation.generated_text',
+                'Improve the title and add descriptive alt text.',
+            );
+
+        Http::assertSent(fn (Request $request) => $request->url() === self::AI_URL);
+    }
+
+    public function test_http_provider_url_is_rejected_without_making_a_request(): void
+    {
+        Config::set('services.ai.base_url', 'http://ai.example.test');
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'AI recommendation service is unavailable.'])
+            ->assertDontSee('http://ai.example.test')
+            ->assertDontSee(self::AI_KEY);
+
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('ai_recommendations', 0);
+    }
+
+    public function test_unexpected_provider_host_is_rejected_by_exact_match(): void
+    {
+        Config::set('services.ai.base_url', 'https://sub.ai.example.test');
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'AI recommendation service is unavailable.'])
+            ->assertDontSee('sub.ai.example.test')
+            ->assertDontSee(self::AI_KEY);
+
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('ai_recommendations', 0);
+    }
+
+    public function test_missing_malformed_or_wildcard_provider_configuration_is_rejected(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        foreach ([
+            ['', ['ai.example.test']],
+            ['not-a-provider-url', ['ai.example.test']],
+            ['https://ai.example.test', []],
+            ['https://ai.example.test', ['*.example.test']],
+        ] as [$baseUrl, $allowedHosts]) {
+            Config::set('services.ai.base_url', $baseUrl);
+            Config::set('services.ai.allowed_hosts', $allowedHosts);
+
+            $this->postJson("/api/audits/{$audit->id}/recommendations")
+                ->assertStatus(502)
+                ->assertExactJson(['message' => 'AI recommendation service is unavailable.']);
+        }
+
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('ai_recommendations', 0);
+    }
+
+    public function test_ai_provider_redirect_is_not_followed_and_fails_generically(): void
+    {
+        $redirectUrl = 'https://unexpected-provider.example.test/internal';
+        $rawProviderResponse = 'raw-provider-response-marker';
+        $this->replaceHttpFake(fn () => Http::response(
+            $rawProviderResponse,
+            302,
+            ['Location' => $redirectUrl],
+        ));
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        $audit->update([
+            'raw_data' => [
+                ...$audit->raw_data,
+                'title' => 'private-prompt-marker',
+            ],
+        ]);
+        Sanctum::actingAs($user);
+
+        $response = $this->postJson("/api/audits/{$audit->id}/recommendations");
+
+        $response
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'AI recommendation service is unavailable.'])
+            ->assertDontSee(self::AI_URL)
+            ->assertDontSee('ai.example.test')
+            ->assertDontSee(self::AI_KEY)
+            ->assertDontSee('private-prompt-marker')
+            ->assertDontSee($rawProviderResponse)
+            ->assertDontSee('trace')
+            ->assertDontSee('stack');
+
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request) => $request->url() === self::AI_URL);
+        Http::assertNotSent(fn (Request $request) => $request->url() === $redirectUrl);
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertSafeFailedUsageLog($user, 302);
+
+        $serializedLog = json_encode(
+            ApiUsageLog::query()->sole()->getAttributes(),
+            JSON_THROW_ON_ERROR,
+        );
+        $this->assertStringNotContainsString(self::AI_URL, $serializedLog);
+        $this->assertStringNotContainsString(self::AI_KEY, $serializedLog);
+        $this->assertStringNotContainsString('private-prompt-marker', $serializedLog);
+        $this->assertStringNotContainsString($rawProviderResponse, $serializedLog);
     }
 
     public function test_ai_request_uses_the_configured_endpoint_model_and_audit_data(): void
