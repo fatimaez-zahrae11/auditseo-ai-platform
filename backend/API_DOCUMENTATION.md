@@ -32,7 +32,7 @@ For requests with a JSON body, also send:
 Content-Type: application/json
 ```
 
-Protected routes require the Sanctum token returned by registration or login:
+Protected routes require the Sanctum token returned by a successful login after email verification:
 
 ```http
 Authorization: Bearer <token>
@@ -42,11 +42,15 @@ Never put the token in a URL or log it to the browser console.
 
 ### Authentication flow
 
-1. Register with `POST /register` or sign in with `POST /login`.
-2. Read the `token` value from the successful response and store it in the frontend's authentication state/storage.
-3. Add `Authorization: Bearer <token>` to every protected request.
-4. Optionally use `GET /me` to restore or verify the current session.
-5. Call `POST /logout` to revoke the current token, then remove it from frontend storage.
+1. Register with `POST /register`. This creates an unverified user, sends an email verification notification, and does **not** return a token.
+2. Show a "check your email" state and let the user open the signed verification URL from the email.
+3. After verification succeeds, ask the user to log in with `POST /login`.
+4. Read the `token` from the successful login response and only then store it in the frontend's authentication state/storage.
+5. Add `Authorization: Bearer <token>` to every protected request.
+6. Optionally use `GET /me` to restore or verify the current session.
+7. Call `POST /logout` to revoke the current token, or `POST /logout-all` to revoke every token, then remove the token from frontend storage.
+
+If login returns `403` with `Email verification is required before login.`, keep the user signed out and offer the verification-notification resend action. Registration alone never grants access to protected endpoints.
 
 Example frontend helper:
 
@@ -78,12 +82,15 @@ export async function apiRequest(path, { token, ...options } = {}) {
 
 | Method | Endpoint | Authentication | Purpose |
 | --- | --- | --- | --- |
-| `POST` | `/register` | No | Create an account and token |
-| `POST` | `/login` | No | Sign in and create a token |
+| `POST` | `/register` | No | Create an unverified account and send a verification email |
+| `POST` | `/login` | No | Sign in a verified user and create a token |
+| `GET` | `/email/verify/{id}/{hash}` | Signed URL | Verify an email address |
+| `POST` | `/email/verification-notification` | No | Resend a verification email with a generic response |
 | `GET` | `/me` | Yes | Get the authenticated user |
 | `POST` | `/logout` | Yes | Revoke the current token |
+| `POST` | `/logout-all` | Yes | Revoke all tokens for the authenticated user |
 | `POST` | `/audits` | Yes | Run and store a new SEO audit |
-| `GET` | `/audits` | Yes | List the user's audits |
+| `GET` | `/audits` | Yes | List the user's audits with pagination |
 | `GET` | `/audits/{id}` | Yes | Get one owned audit |
 | `POST` | `/audits/{audit}/recommendations` | Yes | Generate and store an AI recommendation |
 | `GET` | `/audits/{audit}/recommendations` | Yes | Retrieve stored recommendations |
@@ -93,7 +100,7 @@ export async function apiRequest(path, { token, ...options } = {}) {
 
 ### Register
 
-Creates a user account and immediately returns a Sanctum token.
+Creates an unverified user account and sends an email verification notification. It does **not** create or return a Sanctum token.
 
 - **Method:** `POST`
 - **URL:** `/register`
@@ -120,18 +127,11 @@ Successful response — `201 Created`:
 
 ```json
 {
-  "message": "Registration successful.",
-  "user": {
-    "id": 1,
-    "name": "TechGirl",
-    "email": "TechGirl@example.com",
-    "email_verified_at": null,
-    "created_at": "2026-07-19T10:00:00.000000Z",
-    "updated_at": "2026-07-19T10:00:00.000000Z"
-  },
-  "token": "1|sanctum-token-value"
+  "message": "Registration successful. Please verify your email before logging in."
 }
 ```
+
+After this response, show a "check your email" screen. Do not look for or store a token, and do not call protected routes. Email addresses are trimmed and stored in lowercase.
 
 Common errors:
 
@@ -140,12 +140,12 @@ Common errors:
 
 ### Login
 
-Authenticates an existing user and creates a new Sanctum token.
+Authenticates an existing **verified** user and creates a new Sanctum token. Email input is trimmed and lowercased, so login is not case-sensitive.
 
 - **Method:** `POST`
 - **URL:** `/login`
 - **Authentication:** Not required
-- **Rate limit:** 5 requests per minute
+- **Rate limit:** 5 requests per minute for the same email and IP, plus 20 requests per minute per source IP
 
 Request body:
 
@@ -164,8 +164,8 @@ Successful response — `200 OK`:
   "user": {
     "id": 1,
     "name": "TechGirl",
-    "email": "TechGirl@example.com",
-    "email_verified_at": null,
+    "email": "techgirl@example.com",
+    "email_verified_at": "2026-07-19T10:05:00.000000Z",
     "created_at": "2026-07-19T10:00:00.000000Z",
     "updated_at": "2026-07-19T10:00:00.000000Z"
   },
@@ -183,7 +183,80 @@ Common errors:
 }
 ```
 
+- `403 Forbidden` when the credentials are valid but the email has not been verified:
+
+```json
+{
+  "message": "Email verification is required before login."
+}
+```
+
+  Keep the user logged out, do not store a token, and offer the resend-verification action.
 - `429 Too Many Requests` when the rate limit is exceeded.
+
+### Verify email
+
+Verifies the user's email through the signed URL sent by the backend.
+
+- **Method:** `GET`
+- **URL:** `/email/verify/{id}/{hash}`
+- **Authentication:** Not required
+- **Query string:** The emailed URL includes Laravel signature and expiration parameters. The frontend must preserve the complete URL without changing its path or query string.
+- **Request body:** None
+
+The link is valid only when its signature is valid and its `{hash}` matches the user's email. Calling a valid link again is safe.
+
+Successful response — `200 OK`:
+
+```json
+{
+  "message": "Email verified successfully. You may now log in."
+}
+```
+
+Verification does not return a token. After success, direct the user to log in again.
+
+Common errors:
+
+- `403 Forbidden` when the signed link is invalid, modified, or expired:
+
+```json
+{
+  "message": "The verification link is invalid or has expired."
+}
+```
+
+- `404 Not Found` when the user referenced by the signed URL no longer exists.
+
+### Resend email verification notification
+
+Requests another verification email. The response is intentionally identical for unknown, verified, and unverified email addresses, so the frontend must not infer whether an account exists.
+
+- **Method:** `POST`
+- **URL:** `/email/verification-notification`
+- **Authentication:** Not required
+- **Rate limit:** 5 requests per minute for the same email and IP, plus 20 requests per minute per source IP
+
+Request body:
+
+```json
+{
+  "email": "techgirl@example.com"
+}
+```
+
+Successful generic response — `200 OK`:
+
+```json
+{
+  "message": "If the email is registered and unverified, a verification link has been sent."
+}
+```
+
+Common errors:
+
+- `422 Validation Error` when the email field is missing or invalid.
+- `429 Too Many Requests` when either resend rate limit is exceeded.
 
 ### Get current user
 
@@ -201,8 +274,8 @@ Successful response — `200 OK`:
   "user": {
     "id": 1,
     "name": "TechGirl",
-    "email": "TechGirl@example.com",
-    "email_verified_at": null,
+    "email": "techgirl@example.com",
+    "email_verified_at": "2026-07-19T10:05:00.000000Z",
     "created_at": "2026-07-19T10:00:00.000000Z",
     "updated_at": "2026-07-19T10:00:00.000000Z"
   }
@@ -235,6 +308,47 @@ After success, remove the token from frontend state/storage.
 Common error:
 
 - `401 Unauthorized` when the token is missing, invalid, or already revoked.
+
+### Logout all sessions
+
+Revokes every Sanctum token belonging to the authenticated user.
+
+- **Method:** `POST`
+- **URL:** `/logout-all`
+- **Authentication:** Required
+- **Request body:** None
+
+Successful response — `200 OK`:
+
+```json
+{
+  "message": "All sessions logged out successfully."
+}
+```
+
+After success, remove the token from frontend state/storage on the current device. Other sessions will receive `401 Unauthorized` on their next protected request.
+
+Common error:
+
+- `401 Unauthorized` when the token is missing, invalid, or revoked.
+
+### Protected endpoint requirements
+
+Send `Authorization: Bearer <token>` for every endpoint in this table:
+
+| Endpoint | Additional behavior |
+| --- | --- |
+| `GET /me` | Returns the authenticated user |
+| `POST /logout` | Revokes the current token |
+| `POST /logout-all` | Revokes every token for the user |
+| `GET /dashboard` | Requires a verified email |
+| `POST /audits` | Requires a verified email; limited to 10 requests per hour |
+| `GET /audits` | Requires a verified email; returns paginated owned audits |
+| `GET /audits/{id}` | Requires a verified email; only returns an owned audit |
+| `POST /audits/{id}/recommendations` | Requires a verified email; limited to 5 requests per minute |
+| `GET /audits/{id}/recommendations` | Requires a verified email; only returns recommendations for an owned audit |
+
+Protected routes are generally limited to 30 requests per minute. More specific limits shown above replace that general limit for the applicable endpoint. A missing, expired, revoked, or invalid token returns `401 Unauthorized`.
 
 ## Audits
 
@@ -359,11 +473,12 @@ Common errors:
 
 ### List audits
 
-Returns the authenticated user's audits, ordered newest first. Each audit includes its domain.
+Returns the authenticated user's audits, ordered newest first, in pages of 20. Each audit includes its domain.
 
 - **Method:** `GET`
 - **URL:** `/audits`
 - **Authentication:** Required
+- **Query parameter:** Use `page` to request a page, for example `/audits?page=2`.
 - **Request body:** None
 
 Successful response — `200 OK`:
@@ -394,11 +509,23 @@ Successful response — `200 OK`:
         "updated_at": "2026-07-19T10:15:00.000000Z"
       }
     }
-  ]
+  ],
+  "pagination": {
+    "current_page": 1,
+    "last_page": 3,
+    "per_page": 20,
+    "total": 45,
+    "from": 1,
+    "to": 20,
+    "first_page_url": "https://api.example.com/api/audits?page=1",
+    "last_page_url": "https://api.example.com/api/audits?page=3",
+    "previous_page_url": null,
+    "next_page_url": "https://api.example.com/api/audits?page=2"
+  }
 }
 ```
 
-When the user has no audits, `audits` is an empty array.
+The response always uses separate `audits` and `pagination` objects. `previous_page_url` is `null` on the first page, and `next_page_url` is `null` on the last page. When the user has no audits, `audits` is an empty array; `from` and `to` are `null`.
 
 Common error:
 
@@ -694,7 +821,7 @@ Audit issue `severity` values are:
 
 ## AI recommendations
 
-The frontend must never call the configured AI provider directly. It calls Laravel, and Laravel safely handles provider credentials and stores successful recommendations.
+The frontend must never call the configured AI provider directly. It calls Laravel, and Laravel safely handles provider credentials and stores successful recommendations. The backend limits provider output tokens, downloaded response bytes, and stored `generated_text` length. A response that is invalid or exceeds those security limits is rejected without storing a partial recommendation.
 
 ### Generate an AI recommendation
 
@@ -745,7 +872,7 @@ Common errors:
 }
 ```
 
-Do not attempt to obtain, send, or display an AI provider API key in the frontend.
+Provider transport errors, invalid responses, and security-limit failures all use this generic `502` response. The frontend must not expect or display raw provider errors or internal provider details. Do not attempt to obtain, send, or display an AI provider API key in the frontend.
 
 ### Get stored AI recommendations
 
@@ -843,6 +970,15 @@ Common error:
 
 - `401 Unauthorized` when authentication is missing or invalid.
 
+## Production and frontend environment
+
+- Configure the frontend API base URL to the deployed backend API URL, such as `https://api.example.com/api`. Do not ship the local `http://127.0.0.1:8000/api` value in a production frontend.
+- Set backend `CORS_ALLOWED_ORIGINS` to include the exact production frontend origin, including its scheme and any non-default port. Do not use a wildcard origin for authenticated frontend traffic.
+- Set backend `APP_URL` to the public HTTPS backend URL used to generate signed email-verification links.
+- Set backend `FRONTEND_URL` to the public HTTPS frontend URL.
+- Production verification emails must contain HTTPS production URLs. A link generated for `localhost` or `127.0.0.1` will not provide a usable production verification flow.
+- Keep the complete signed verification URL unchanged when routing the user through the frontend or backend; modifying its signed parameters invalidates it.
+
 ## Common error formats and status codes
 
 Always branch on the HTTP status (`response.status`), not only the response message.
@@ -869,7 +1005,7 @@ The frontend should clear an invalid token and redirect the user to sign in.
 
 ### `403 Forbidden`
 
-The user is authenticated but is not allowed to perform an operation. The frontend should show an access-denied state. Ownership-protected audit endpoints intentionally return `404` instead of revealing whether another user's resource exists.
+Login returns `403` when valid credentials belong to an unverified user. In that case, keep the user signed out and offer verification resend. Other `403` responses indicate that an operation is forbidden. Ownership-protected audit endpoints intentionally return `404` instead of revealing whether another user's resource exists.
 
 ### `404 Not Found`
 
@@ -897,7 +1033,7 @@ Render messages from `errors[field]` beside the matching form control. Login can
 
 ### `429 Too Many Requests`
 
-The client exceeded a route rate limit. Registration, login, and AI recommendation generation are limited to 5 requests per minute. Disable repeated submission and ask the user to retry later.
+The client exceeded a route rate limit. Registration and AI recommendation generation are limited to 5 requests per minute. Login and verification resend also have email-and-IP and IP-only limits, so rotating email addresses does not bypass throttling. Protected routes have their documented general or endpoint-specific limits. Disable repeated submission and ask the user to retry later.
 
 ### `502 AI service unavailable`
 
@@ -913,6 +1049,12 @@ Keep the current audit page usable, show a retry message, and avoid tight automa
 
 ## Important frontend notes
 
+- After registration, show "check your email"; registration does not authenticate the user and does not return a token.
+- Do not expect or store a token from `POST /register`.
+- Handle the login `403` email-verification response separately from invalid credentials and provide a resend-verification form or action.
+- After successful email verification, send the user through login again.
+- Store a Sanctum token only after successful login, and remove it after logout, logout-all, or an authentication failure.
+- Send `Authorization: Bearer <token>` on every protected API request.
 - Display `global_score` prominently and show `technical_score`, `content_score`, `links_score`, and `performance_score` as category scores.
 - Group audit issues by `category` and optionally by `severity` for summary and detail views.
 - Use `raw_data` to build detailed tabs such as Technical SEO, Content, Links, Performance, Structured Data, Sitemap/Robots, and Crawl.
@@ -923,6 +1065,7 @@ Keep the current audit page usable, show a retry message, and avoid tight automa
 - Laravel stores each successfully generated recommendation.
 - Use `GET /audits/{audit}/recommendations` to retrieve stored results without making another AI request.
 - Display the `generated_text` field from the returned recommendation object.
+- Treat AI provider failures as the generic backend `502`; never render internal provider errors even if an unexpected upstream message is encountered.
 - Recommendations returned by the GET endpoint are ordered newest to oldest.
 - Dashboard statistics contain only data owned by the authenticated user.
 - A resource belonging to another user is returned as `404 Not Found`, not as accessible data.
