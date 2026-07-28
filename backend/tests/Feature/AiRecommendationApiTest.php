@@ -102,7 +102,100 @@ class AiRecommendationApiTest extends TestCase
             ->assertJsonCount(2, 'recommendations')
             ->assertJsonPath('recommendations.0.id', $newerRecommendation->id)
             ->assertJsonPath('recommendations.1.id', $olderRecommendation->id)
+            ->assertJsonPath('pagination.current_page', 1)
+            ->assertJsonPath('pagination.last_page', 1)
+            ->assertJsonPath('pagination.per_page', 20)
+            ->assertJsonPath('pagination.total', 2)
+            ->assertJsonPath('pagination.from', 1)
+            ->assertJsonPath('pagination.to', 2)
+            ->assertJsonPath('pagination.next_page_url', null)
+            ->assertJsonPath('pagination.previous_page_url', null)
             ->assertDontSee(self::AI_KEY);
+    }
+
+    public function test_recommendation_history_enforces_the_default_page_size(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        $recommendationIds = $this->createRecommendations($audit, 25);
+        Sanctum::actingAs($user);
+
+        $response = $this->getJson("/api/audits/{$audit->id}/recommendations");
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(20, 'recommendations')
+            ->assertJsonPath('recommendations.0.id', $recommendationIds[24])
+            ->assertJsonPath('recommendations.19.id', $recommendationIds[5])
+            ->assertJsonPath('pagination.current_page', 1)
+            ->assertJsonPath('pagination.last_page', 2)
+            ->assertJsonPath('pagination.per_page', 20)
+            ->assertJsonPath('pagination.total', 25)
+            ->assertJsonPath('pagination.from', 1)
+            ->assertJsonPath('pagination.to', 20);
+        $this->assertNotNull($response->json('pagination.next_page_url'));
+        $this->assertNull($response->json('pagination.previous_page_url'));
+    }
+
+    public function test_recommendation_history_page_parameter_preserves_newest_first_ordering(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        $recommendationIds = $this->createRecommendations($audit, 25);
+        Sanctum::actingAs($user);
+
+        $response = $this->getJson("/api/audits/{$audit->id}/recommendations?page=2");
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(5, 'recommendations')
+            ->assertJsonPath('recommendations.0.id', $recommendationIds[4])
+            ->assertJsonPath('recommendations.4.id', $recommendationIds[0])
+            ->assertJsonPath('pagination.current_page', 2)
+            ->assertJsonPath('pagination.last_page', 2)
+            ->assertJsonPath('pagination.per_page', 20)
+            ->assertJsonPath('pagination.total', 25)
+            ->assertJsonPath('pagination.from', 21)
+            ->assertJsonPath('pagination.to', 25)
+            ->assertJsonPath('pagination.next_page_url', null);
+        $this->assertNotNull($response->json('pagination.previous_page_url'));
+    }
+
+    public function test_recommendation_history_enforces_the_maximum_page_size(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        $this->createRecommendations($audit, 55);
+        Sanctum::actingAs($user);
+
+        $this->getJson("/api/audits/{$audit->id}/recommendations?per_page=500")
+            ->assertOk()
+            ->assertJsonCount(50, 'recommendations')
+            ->assertJsonPath('pagination.current_page', 1)
+            ->assertJsonPath('pagination.last_page', 2)
+            ->assertJsonPath('pagination.per_page', 50)
+            ->assertJsonPath('pagination.total', 55)
+            ->assertJsonPath('pagination.from', 1)
+            ->assertJsonPath('pagination.to', 50);
+    }
+
+    public function test_empty_recommendation_history_returns_pagination_metadata(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $this->getJson("/api/audits/{$audit->id}/recommendations")
+            ->assertOk()
+            ->assertJsonCount(0, 'recommendations')
+            ->assertJsonPath('pagination.current_page', 1)
+            ->assertJsonPath('pagination.last_page', 1)
+            ->assertJsonPath('pagination.per_page', 20)
+            ->assertJsonPath('pagination.total', 0)
+            ->assertJsonPath('pagination.from', null)
+            ->assertJsonPath('pagination.to', null)
+            ->assertJsonPath('pagination.next_page_url', null)
+            ->assertJsonPath('pagination.previous_page_url', null);
     }
 
     public function test_a_user_cannot_retrieve_recommendations_for_another_users_audit(): void
@@ -656,6 +749,24 @@ class AiRecommendationApiTest extends TestCase
         ]);
 
         return $audit;
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function createRecommendations(Audit $audit, int $count): array
+    {
+        $ids = [];
+
+        foreach (range(1, $count) as $number) {
+            $ids[] = $audit->aiRecommendations()->create([
+                'provider' => 'test-provider',
+                'prompt_summary' => "Recommendation {$number}",
+                'generated_text' => "Generated recommendation {$number}.",
+            ])->id;
+        }
+
+        return $ids;
     }
 
     private function assertSafeFailedUsageLog(User $user, ?int $statusCode): void

@@ -876,12 +876,13 @@ Provider transport errors, invalid responses, and security-limit failures all us
 
 ### Get stored AI recommendations
 
-Returns recommendations already stored for an owned audit. This endpoint does **not** call the AI provider and does not generate a new recommendation. Results are ordered newest first.
+Returns a paginated history of recommendations already stored for an owned audit. This endpoint does **not** call the AI provider and does not generate a new recommendation. Results are ordered newest first.
 
 - **Method:** `GET`
 - **URL:** `/audits/{audit}/recommendations`
 - **Authentication:** Required
 - **Path parameter:** Replace `{audit}` with the audit ID.
+- **Query parameters:** `page` selects the page. `per_page` selects the page size; the default is `20` and the maximum is `50`.
 - **Request body:** None
 
 Successful response — `200 OK`:
@@ -898,11 +899,21 @@ Successful response — `200 OK`:
       "created_at": "2026-07-19T10:20:00.000000Z",
       "updated_at": "2026-07-19T10:20:00.000000Z"
     }
-  ]
+  ],
+  "pagination": {
+    "current_page": 1,
+    "last_page": 1,
+    "per_page": 20,
+    "total": 1,
+    "from": 1,
+    "to": 1,
+    "next_page_url": null,
+    "previous_page_url": null
+  }
 }
 ```
 
-When no recommendation has been generated, `recommendations` is an empty array. Render each item's `generated_text`; do not regenerate merely to display prior results.
+The frontend must consume both the `recommendations` array and the `pagination` object rather than expecting the endpoint to return the complete history in one array. Use the pagination URLs or the `page` query parameter to request more results. When no recommendation has been generated, `recommendations` is an empty array, `total` is `0`, and `from` and `to` are `null`. Render each item's `generated_text`; do not regenerate merely to display prior results.
 
 Common errors:
 
