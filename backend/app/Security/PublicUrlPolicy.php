@@ -3,6 +3,7 @@
 namespace App\Security;
 
 use Illuminate\Validation\ValidationException;
+use RuntimeException;
 use Symfony\Component\HttpFoundation\IpUtils;
 
 final class PublicUrlPolicy
@@ -43,7 +44,10 @@ final class PublicUrlPolicy
         'ff00::/8',
     ];
 
-    public function __construct(private readonly DnsResolver $dnsResolver) {}
+    public function __construct(
+        private readonly DnsResolver $dnsResolver,
+        private readonly CurlTransportCapabilities $curlCapabilities,
+    ) {}
 
     /**
      * @return array{
@@ -123,8 +127,16 @@ final class PublicUrlPolicy
      */
     public function connectionOptions(array $target): array
     {
-        if ($target['is_ip_literal'] || ! defined('CURLOPT_RESOLVE')) {
+        if (! $this->curlCapabilities->curlIsAvailable()) {
+            throw new RuntimeException('The secure HTTP transport is unavailable.');
+        }
+
+        if ($target['is_ip_literal']) {
             return [];
+        }
+
+        if (! $this->curlCapabilities->dnsPinningIsAvailable()) {
+            throw new RuntimeException('DNS pinning is unavailable.');
         }
 
         $address = $target['addresses'][0];

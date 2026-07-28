@@ -4,16 +4,23 @@ namespace Tests\Feature;
 
 use App\Http\Requests\StoreAuditRequest;
 use App\Models\User;
+use App\Security\CurlTransportCapabilities;
 use App\Security\DnsResolver;
 use App\Security\PublicUrlPolicy;
+use App\Services\Seo\BoundedResponseStream;
+use App\Services\Seo\PinnedCurlHandler;
 use App\Services\Seo\SeoCrawlerService;
+use GuzzleHttp\Handler\CurlHandler;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
 use Monolog\Handler\TestHandler;
 use PHPUnit\Framework\Attributes\DataProvider;
+use ReflectionClass;
+use RuntimeException;
 use Tests\TestCase;
 
 class StoreAuditRequestTest extends TestCase
@@ -206,5 +213,76 @@ class StoreAuditRequestTest extends TestCase
             ['example.com:443:93.184.216.34'],
             $options['curl'][constant('CURLOPT_RESOLVE')],
         );
+    }
+
+    public function test_crawler_requests_use_the_pinned_curl_handler_without_stream_mode(): void
+    {
+        if (! defined('CURLOPT_RESOLVE')) {
+            $this->markTestSkipped('The cURL extension is required for DNS pinning.');
+        }
+
+        $policy = app(PublicUrlPolicy::class);
+        $target = $policy->validate('https://example.com/');
+        $crawler = app(SeoCrawlerService::class);
+        $crawlerReflection = new ReflectionClass($crawler);
+        $httpClient = $crawlerReflection->getMethod('httpClient')->invoke(
+            $crawler,
+            $target,
+            5_000_000,
+        );
+
+        $this->assertInstanceOf(PendingRequest::class, $httpClient);
+        $this->assertArrayNotHasKey('stream', $httpClient->getOptions());
+        $this->assertSame(
+            ['example.com:443:93.184.216.34'],
+            $httpClient->getOptions()['curl'][constant('CURLOPT_RESOLVE')],
+        );
+
+        $pendingRequestReflection = new ReflectionClass($httpClient);
+        $handler = $pendingRequestReflection->getProperty('handler')->getValue($httpClient);
+
+        $this->assertInstanceOf(PinnedCurlHandler::class, $handler);
+
+        $pinnedHandlerReflection = new ReflectionClass($handler);
+        $this->assertInstanceOf(
+            CurlHandler::class,
+            $pinnedHandlerReflection->getProperty('handler')->getValue($handler),
+        );
+    }
+
+    public function test_dns_pinning_unavailability_fails_closed(): void
+    {
+        $resolver = Mockery::mock(DnsResolver::class);
+        $resolver->shouldReceive('resolve')
+            ->once()
+            ->with('example.com')
+            ->andReturn(['93.184.216.34']);
+        $policy = new PublicUrlPolicy(
+            $resolver,
+            new CurlTransportCapabilities(
+                curlAvailable: true,
+                dnsPinningAvailable: false,
+            ),
+        );
+        $target = $policy->validate('https://example.com/');
+
+        $this->expectException(RuntimeException::class);
+        $policy->connectionOptions($target);
+    }
+
+    public function test_bounded_curl_sink_rejects_bytes_beyond_its_limit(): void
+    {
+        $stream = new BoundedResponseStream(5);
+
+        $this->assertSame(5, $stream->write('12345'));
+
+        try {
+            $stream->write('6');
+            $this->fail('The bounded response stream accepted an oversized write.');
+        } catch (RuntimeException) {
+            $this->assertSame(5, $stream->getSize());
+        } finally {
+            $stream->close();
+        }
     }
 }

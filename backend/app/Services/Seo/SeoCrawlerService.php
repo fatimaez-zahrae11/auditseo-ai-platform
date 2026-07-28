@@ -2,6 +2,7 @@
 
 namespace App\Services\Seo;
 
+use App\Security\CurlTransportCapabilities;
 use App\Security\PublicUrlPolicy;
 use DOMDocument;
 use DOMXPath;
@@ -11,6 +12,7 @@ use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Validation\ValidationException;
 use JsonException;
+use Psr\Http\Message\ResponseInterface;
 use RuntimeException;
 
 class SeoCrawlerService
@@ -75,7 +77,10 @@ class SeoCrawlerService
         'cliquez ici',
     ];
 
-    public function __construct(private readonly PublicUrlPolicy $urlPolicy) {}
+    public function __construct(
+        private readonly PublicUrlPolicy $urlPolicy,
+        private readonly CurlTransportCapabilities $curlCapabilities,
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -140,7 +145,7 @@ class SeoCrawlerService
         while (true) {
             $target = $this->urlPolicy->validate($currentUrl);
             [$response, $body] = $this->downloadResponse(
-                $this->httpClient($target),
+                $this->httpClient($target, self::MAX_HTML_BYTES),
                 $currentUrl,
                 self::MAX_HTML_BYTES,
             );
@@ -166,11 +171,12 @@ class SeoCrawlerService
     /**
      * @param  array{host: string, port: int, addresses: list<string>, is_ip_literal: bool}  $target
      */
-    private function httpClient(array $target): PendingRequest
+    private function httpClient(array $target, int $maxBytes): PendingRequest
     {
         return Http::timeout(10)
             ->connectTimeout(5)
             ->withUserAgent('AuditSEO-Crawler/2.0')
+            ->setHandler($this->pinnedCurlHandler($maxBytes))
             ->withOptions([
                 'allow_redirects' => false,
                 ...$this->urlPolicy->connectionOptions($target),
@@ -180,11 +186,12 @@ class SeoCrawlerService
     /**
      * @param  array{host: string, port: int, addresses: list<string>, is_ip_literal: bool}  $target
      */
-    private function linkCheckHttpClient(array $target): PendingRequest
+    private function linkCheckHttpClient(array $target, int $maxBytes): PendingRequest
     {
         return Http::timeout(3)
             ->connectTimeout(2)
             ->withUserAgent('AuditSEO-Crawler/2.0')
+            ->setHandler($this->pinnedCurlHandler($maxBytes))
             ->withOptions([
                 'allow_redirects' => false,
                 ...$this->urlPolicy->connectionOptions($target),
@@ -970,7 +977,7 @@ class SeoCrawlerService
         while (true) {
             $target = $this->urlPolicy->validate($currentUrl);
             [$response, $body] = $this->downloadResponse(
-                $this->httpClient($target),
+                $this->httpClient($target, $maxBytes),
                 $currentUrl,
                 $maxBytes,
             );
@@ -1489,7 +1496,7 @@ class SeoCrawlerService
         while (true) {
             $target = $this->urlPolicy->validate($currentUrl);
             [$response] = $this->downloadResponse(
-                $this->linkCheckHttpClient($target),
+                $this->linkCheckHttpClient($target, self::MAX_LINK_RESPONSE_BYTES),
                 $currentUrl,
                 self::MAX_LINK_RESPONSE_BYTES,
             );
@@ -1528,7 +1535,7 @@ class SeoCrawlerService
         while (true) {
             $target = $this->urlPolicy->validate($currentUrl);
             [$response, $body] = $this->downloadResponse(
-                $this->linkCheckHttpClient($target),
+                $this->linkCheckHttpClient($target, self::MAX_HTML_BYTES),
                 $currentUrl,
                 self::MAX_HTML_BYTES,
             );
@@ -1561,10 +1568,10 @@ class SeoCrawlerService
      */
     private function downloadResponse(PendingRequest $client, string $url, int $maxBytes): array
     {
-        $response = $client->withOptions(['stream' => true])->get($url);
+        $response = $client->get($url);
 
         try {
-            $this->rejectOversizedContentLength($response, $maxBytes);
+            $this->rejectOversizedContentLength($response->toPsrResponse(), $maxBytes);
 
             $source = $response->toPsrResponse()->getBody();
             $temporary = fopen("php://temp/maxmemory:{$maxBytes}", 'w+b');
@@ -1612,10 +1619,19 @@ class SeoCrawlerService
         }
     }
 
-    private function rejectOversizedContentLength(Response $response, int $maxBytes): void
+    private function pinnedCurlHandler(int $maxBytes): PinnedCurlHandler
+    {
+        return new PinnedCurlHandler(
+            $this->curlCapabilities,
+            $maxBytes,
+            fn (ResponseInterface $response) => $this->rejectOversizedContentLength($response, $maxBytes),
+        );
+    }
+
+    private function rejectOversizedContentLength(ResponseInterface $response, int $maxBytes): void
     {
         foreach (['Content-Length', 'X-Encoded-Content-Length'] as $headerName) {
-            foreach ($response->toPsrResponse()->getHeader($headerName) as $header) {
+            foreach ($response->getHeader($headerName) as $header) {
                 foreach (explode(',', $header) as $value) {
                     $value = ltrim(trim($value), '0');
                     $value = $value === '' ? '0' : $value;

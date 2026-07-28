@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Audit;
 use App\Models\Domain;
 use App\Models\User;
+use App\Security\CurlTransportCapabilities;
 use App\Security\DnsResolver;
 use App\Services\Seo\SeoCrawlerService;
 use Exception;
@@ -210,6 +211,32 @@ class AuditApiTest extends TestCase
             ]);
 
         $this->assertStringNotContainsString('Sensitive transport details', $response->getContent());
+        $this->assertDatabaseCount('audits', 0);
+    }
+
+    public function test_crawler_fails_safely_without_falling_back_when_dns_pinning_is_unavailable(): void
+    {
+        $this->app->instance(
+            CurlTransportCapabilities::class,
+            new CurlTransportCapabilities(
+                curlAvailable: true,
+                dnsPinningAvailable: false,
+            ),
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $response = $this->postJson('/api/audits', [
+            'url' => 'https://example.com/page',
+        ]);
+
+        $response
+            ->assertStatus(502)
+            ->assertExactJson([
+                'message' => 'Unable to fetch the requested URL.',
+            ]);
+
+        $this->assertStringNotContainsString('DNS pinning', $response->getContent());
+        Http::assertNothingSent();
         $this->assertDatabaseCount('audits', 0);
     }
 
