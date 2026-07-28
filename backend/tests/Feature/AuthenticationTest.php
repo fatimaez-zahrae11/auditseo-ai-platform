@@ -5,7 +5,9 @@ namespace Tests\Feature;
 use App\Models\AuthAuditLog;
 use App\Models\User;
 use Illuminate\Auth\Notifications\VerifyEmail;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\URL;
@@ -21,7 +23,7 @@ class AuthenticationTest extends TestCase
 
         $response = $this->postJson('/api/register', [
             'name' => 'Test User',
-            'email' => 'test@example.com',
+            'email' => ' Test@Example.COM ',
             'password' => 'Password1',
         ]);
 
@@ -49,7 +51,7 @@ class AuthenticationTest extends TestCase
         ]);
 
         $response = $this->postJson('/api/login', [
-            'email' => 'test@example.com',
+            'email' => ' TEST@Example.COM ',
             'password' => 'Password1',
         ]);
 
@@ -153,7 +155,7 @@ class AuthenticationTest extends TestCase
         ]);
 
         $existingResponse = $this->postJson('/api/email/verification-notification', [
-            'email' => 'unverified@example.com',
+            'email' => ' UNVERIFIED@Example.COM ',
         ]);
         $unknownResponse = $this->postJson('/api/email/verification-notification', [
             'email' => 'unknown@example.com',
@@ -223,7 +225,7 @@ class AuthenticationTest extends TestCase
         ]);
 
         $unknownEmailResponse = $this->postJson('/api/login', [
-            'email' => 'unknown@example.com',
+            'email' => ' UNKNOWN@Example.COM ',
             'password' => 'WrongPassword1',
         ]);
 
@@ -270,17 +272,43 @@ class AuthenticationTest extends TestCase
 
     public function test_registration_rejects_an_email_that_is_already_registered(): void
     {
-        User::factory()->create(['email' => 'test@example.com']);
+        Notification::fake();
+
+        $this->postJson('/api/register', [
+            'name' => 'Original User',
+            'email' => 'User@Example.COM',
+            'password' => 'Password1',
+        ])->assertCreated();
 
         $this->postJson('/api/register', [
             'name' => 'Duplicate User',
-            'email' => 'test@example.com',
+            'email' => ' USER@example.com ',
             'password' => 'Password1',
         ])->assertUnprocessable()
             ->assertJsonValidationErrors('email');
 
         $this->assertDatabaseCount('users', 1);
+        $this->assertDatabaseHas('users', ['email' => 'user@example.com']);
         $this->assertDatabaseCount('personal_access_tokens', 0);
+    }
+
+    public function test_database_rejects_case_variant_email_duplicates(): void
+    {
+        User::factory()->create(['email' => 'database@example.com']);
+
+        try {
+            DB::table('users')->insert([
+                'name' => 'Case Variant',
+                'email' => 'DATABASE@EXAMPLE.COM',
+                'password' => Hash::make('Password1'),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            $this->fail('The database accepted a case-variant duplicate email.');
+        } catch (QueryException) {
+            $this->assertDatabaseCount('users', 1);
+        }
     }
 
     public function test_me_requires_authentication_and_returns_the_authenticated_user(): void

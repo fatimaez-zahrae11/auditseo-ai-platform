@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Support\EmailAddress;
 use Illuminate\Foundation\Http\FormRequest;
 
 class RegisterRequest extends FormRequest
@@ -9,6 +10,17 @@ class RegisterRequest extends FormRequest
     public function authorize(): bool
     {
         return true;
+    }
+
+    protected function prepareForValidation(): void
+    {
+        $email = $this->input('email');
+
+        if (is_string($email)) {
+            $this->merge([
+                'email' => EmailAddress::canonicalize($email),
+            ]);
+        }
     }
 
     public function rules(): array

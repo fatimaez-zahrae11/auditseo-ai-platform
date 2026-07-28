@@ -4,10 +4,10 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Support\EmailAddress;
 use Illuminate\Auth\Events\Verified;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 
 class EmailVerificationController extends Controller
 {
@@ -40,11 +40,18 @@ class EmailVerificationController extends Controller
 
     public function resend(Request $request): JsonResponse
     {
+        $email = $request->input('email');
+
+        if (is_string($email)) {
+            $request->merge([
+                'email' => EmailAddress::canonicalize($email),
+            ]);
+        }
+
         $validated = $request->validate([
             'email' => ['required', 'email', 'max:255'],
         ]);
-        $email = Str::lower(trim($validated['email']));
-        $user = User::where('email', $email)->first();
+        $user = User::where('email', $validated['email'])->first();
 
         if ($user && ! $user->hasVerifiedEmail()) {
             $user->sendEmailVerificationNotification();

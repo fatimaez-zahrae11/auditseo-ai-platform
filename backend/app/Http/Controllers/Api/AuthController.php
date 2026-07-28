@@ -7,6 +7,7 @@ use App\Http\Requests\LoginRequest;
 use App\Http\Requests\RegisterRequest;
 use App\Models\AuthAuditLog;
 use App\Models\User;
+use App\Support\EmailAddress;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -148,7 +149,9 @@ class AuthController extends Controller
     ): void {
         AuthAuditLog::create([
             'user_id' => $user?->id,
-            'email' => $email === null ? null : Str::limit(Str::lower(trim($email)), 255, ''),
+            'email' => $email === null
+                ? null
+                : Str::limit(EmailAddress::canonicalize($email), 255, ''),
             'event' => $event,
             'ip_address' => Str::limit((string) $request->ip(), 45, ''),
             'user_agent' => $request->userAgent() === null
