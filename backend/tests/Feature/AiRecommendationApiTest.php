@@ -6,12 +6,20 @@ use App\Models\ApiUsageLog;
 use App\Models\Audit;
 use App\Models\Domain;
 use App\Models\User;
+use App\Services\Ai\BoundedAiResponseStream;
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Psr7\InflateStream;
+use GuzzleHttp\Psr7\PumpStream;
+use GuzzleHttp\Psr7\Response as Psr7Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
+use RuntimeException;
 use Tests\TestCase;
 
 class AiRecommendationApiTest extends TestCase
@@ -39,6 +47,9 @@ class AiRecommendationApiTest extends TestCase
             'chat_endpoint' => '/v1/chat/completions',
             'model' => self::AI_MODEL,
             'api_key' => self::AI_KEY,
+            'max_output_tokens' => 512,
+            'max_response_bytes' => 1_048_576,
+            'max_generated_text_chars' => 20_000,
         ]);
 
         $this->aiStatus = 200;
@@ -172,11 +183,190 @@ class AiRecommendationApiTest extends TestCase
 
             return $request->url() === self::AI_URL
                 && $request['model'] === self::AI_MODEL
+                && $request['max_tokens'] === 512
                 && $request->hasHeader('Authorization', 'Bearer '.self::AI_KEY)
                 && str_contains($userPrompt, '"scores"')
                 && str_contains($userPrompt, '"raw_data"')
                 && str_contains($userPrompt, '"issues"');
         });
+    }
+
+    public function test_oversized_ai_content_length_is_rejected_before_body_buffering(): void
+    {
+        Config::set('services.ai.max_response_bytes', 128);
+        $progress = (object) ['bytes' => 0];
+        $this->replaceHttpFake(fn () => $this->streamedResponse(
+            256,
+            ['Content-Length' => '256', 'Content-Type' => 'application/json'],
+            $progress,
+        ));
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'AI recommendation service is unavailable.']);
+
+        $this->assertSame(0, $progress->bytes);
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertSafeFailedUsageLog($user, 200);
+    }
+
+    public function test_misleading_content_length_does_not_bypass_ai_response_limit(): void
+    {
+        Config::set('services.ai.max_response_bytes', 128);
+        $progress = (object) ['bytes' => 0];
+        $this->replaceHttpFake(fn () => $this->streamedResponse(
+            256,
+            ['Content-Length' => '10', 'Content-Type' => 'application/json'],
+            $progress,
+            contents: 'provider-internal-diagnostics',
+        ));
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $response = $this->postJson("/api/audits/{$audit->id}/recommendations");
+
+        $response
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'AI recommendation service is unavailable.'])
+            ->assertDontSee('provider-internal-diagnostics');
+
+        $this->assertSame(129, $progress->bytes);
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertSafeFailedUsageLog($user, 200);
+    }
+
+    public function test_missing_content_length_does_not_bypass_ai_response_limit(): void
+    {
+        Config::set('services.ai.max_response_bytes', 128);
+        $progress = (object) ['bytes' => 0];
+        $this->replaceHttpFake(fn () => $this->streamedResponse(
+            256,
+            ['Transfer-Encoding' => 'chunked', 'Content-Type' => 'application/json'],
+            $progress,
+        ));
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'AI recommendation service is unavailable.']);
+
+        $this->assertSame(129, $progress->bytes);
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertSafeFailedUsageLog($user, 200);
+    }
+
+    public function test_oversized_compressed_ai_response_is_rejected_after_decoding(): void
+    {
+        Config::set('services.ai.max_response_bytes', 128);
+        $compressed = gzencode(str_repeat('x', 256));
+        $this->assertNotFalse($compressed);
+        $progress = (object) ['bytes' => 0];
+        $this->replaceHttpFake(function () use ($compressed, $progress) {
+            $encodedResponse = $this->streamedResponse(
+                strlen($compressed),
+                [],
+                $progress,
+                contents: $compressed,
+            )->wait();
+
+            return Create::promiseFor(new Psr7Response(
+                200,
+                [
+                    'Content-Type' => 'application/json',
+                    'X-Encoded-Content-Encoding' => 'gzip',
+                    'X-Encoded-Content-Length' => (string) strlen($compressed),
+                ],
+                new InflateStream($encodedResponse->getBody()),
+            ));
+        });
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'AI recommendation service is unavailable.']);
+
+        $this->assertGreaterThan(0, $progress->bytes);
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertSafeFailedUsageLog($user, 200);
+    }
+
+    public function test_excessively_large_generated_text_is_not_persisted(): void
+    {
+        Config::set('services.ai.max_generated_text_chars', 20);
+        $this->aiResponse = [
+            'choices' => [
+                ['message' => ['content' => str_repeat('x', 21)]],
+            ],
+        ];
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'AI recommendation service is unavailable.']);
+
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertDatabaseHas('api_usage_logs', [
+            'user_id' => $user->id,
+            'provider' => 'test-provider',
+            'status' => 'failed',
+            'status_code' => 200,
+            'error_message' => 'External AI response was invalid.',
+        ]);
+    }
+
+    public function test_invalid_ai_json_is_handled_without_exposing_provider_data(): void
+    {
+        $this->replaceHttpFake(fn () => Http::response(
+            '{"choices":[{"message":{"content":"provider-internal-data"}}',
+            200,
+            ['Content-Type' => 'application/json'],
+        ));
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $response = $this->postJson("/api/audits/{$audit->id}/recommendations");
+
+        $response
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'AI recommendation service is unavailable.'])
+            ->assertDontSee('provider-internal-data')
+            ->assertDontSee(self::AI_KEY);
+
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertDatabaseHas('api_usage_logs', [
+            'user_id' => $user->id,
+            'provider' => 'test-provider',
+            'status' => 'failed',
+            'status_code' => 200,
+            'error_message' => 'External AI response was invalid.',
+        ]);
+    }
+
+    public function test_bounded_ai_curl_sink_rejects_oversized_writes(): void
+    {
+        $stream = new BoundedAiResponseStream(5);
+
+        $this->assertSame(5, $stream->write('12345'));
+
+        try {
+            $stream->write('6');
+            $this->fail('The bounded AI response stream accepted an oversized write.');
+        } catch (RuntimeException) {
+            $this->assertSame(5, $stream->getSize());
+        } finally {
+            $stream->close();
+        }
     }
 
     public function test_a_user_cannot_generate_a_recommendation_for_another_users_audit(): void
@@ -343,5 +533,68 @@ class AiRecommendationApiTest extends TestCase
         ]);
 
         return $audit;
+    }
+
+    private function assertSafeFailedUsageLog(User $user, ?int $statusCode): void
+    {
+        $this->assertDatabaseHas('api_usage_logs', [
+            'user_id' => $user->id,
+            'provider' => 'test-provider',
+            'status' => 'failed',
+            'status_code' => $statusCode,
+            'error_message' => 'External AI request failed.',
+        ]);
+
+        $usageLog = ApiUsageLog::query()->sole();
+        $serializedLog = json_encode($usageLog->getAttributes(), JSON_THROW_ON_ERROR);
+
+        $this->assertStringNotContainsString(self::AI_KEY, $serializedLog);
+        $this->assertStringNotContainsString('provider-internal-diagnostics', $serializedLog);
+    }
+
+    private function replaceHttpFake(callable $callback): void
+    {
+        $factory = new HttpFactory($this->app['events']);
+        Http::swap($factory);
+        $factory->fake($callback);
+    }
+
+    /**
+     * @param  array<string, string>  $headers
+     */
+    private function streamedResponse(
+        int $totalBytes,
+        array $headers,
+        object $progress,
+        int $status = 200,
+        string $contents = 'x',
+    ): PromiseInterface {
+        $remainingBytes = $totalBytes;
+        $offset = 0;
+        $useExactContents = strlen($contents) === $totalBytes;
+        $stream = new PumpStream(function (int $requestedBytes) use (
+            &$remainingBytes,
+            &$offset,
+            $progress,
+            $contents,
+            $useExactContents,
+        ): ?string {
+            if ($remainingBytes === 0) {
+                return null;
+            }
+
+            $bytes = min($requestedBytes, $remainingBytes);
+            $chunk = $useExactContents
+                ? substr($contents, $offset, $bytes)
+                : str_repeat($contents, (int) ceil($bytes / strlen($contents)));
+            $chunk = substr($chunk, 0, $bytes);
+            $remainingBytes -= $bytes;
+            $offset += $bytes;
+            $progress->bytes += $bytes;
+
+            return $chunk;
+        });
+
+        return Create::promiseFor(new Psr7Response($status, $headers, $stream));
     }
 }

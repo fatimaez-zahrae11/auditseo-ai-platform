@@ -41,6 +41,9 @@ return [
         'chat_endpoint' => env('AI_CHAT_ENDPOINT'),
         'model' => env('AI_MODEL'),
         'api_key' => env('AI_API_KEY'),
+        'max_output_tokens' => (int) env('AI_MAX_OUTPUT_TOKENS', 2048),
+        'max_response_bytes' => (int) env('AI_MAX_RESPONSE_BYTES', 1048576),
+        'max_generated_text_chars' => (int) env('AI_MAX_GENERATED_TEXT_CHARS', 20000),
     ],
 
 ];
