@@ -234,6 +234,38 @@ class AuthenticationTest extends TestCase
         Notification::assertNothingSent();
     }
 
+    public function test_verification_resend_is_rate_limited_when_one_email_rotates_ips_and_casing(): void
+    {
+        Notification::fake();
+        $user = User::factory()->unverified()->create([
+            'email' => 'unverified@example.com',
+        ]);
+        $genericResponse = [
+            'message' => 'If the email is registered and unverified, a verification link has been sent.',
+        ];
+
+        foreach (range(1, 10) as $attempt) {
+            $email = $attempt % 2 === 0
+                ? ' UNVERIFIED@Example.COM '
+                : 'unverified@example.com';
+
+            $this->withServerVariables(['REMOTE_ADDR' => "198.51.100.{$attempt}"])
+                ->postJson('/api/email/verification-notification', [
+                    'email' => $email,
+                ])
+                ->assertOk()
+                ->assertExactJson($genericResponse);
+        }
+
+        $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.11'])
+            ->postJson('/api/email/verification-notification', [
+                'email' => ' Unverified@EXAMPLE.com ',
+            ])
+            ->assertTooManyRequests();
+
+        Notification::assertSentToTimes($user, VerifyEmail::class, 10);
+    }
+
     public function test_verification_resend_ip_limits_are_independent(): void
     {
         Notification::fake();
@@ -343,6 +375,32 @@ class AuthenticationTest extends TestCase
             $this->assertArrayNotHasKey('password', $auditLog->getAttributes());
             $this->assertArrayNotHasKey('token', $auditLog->getAttributes());
         }
+    }
+
+    public function test_unknown_email_login_still_performs_a_dummy_password_check(): void
+    {
+        Hash::shouldReceive('check')
+            ->once()
+            ->with(
+                'WrongPassword1',
+                \Mockery::on(fn (mixed $hash): bool => is_string($hash)
+                    && password_get_info($hash)['algoName'] === 'bcrypt'),
+            )
+            ->andReturnFalse();
+
+        $this->postJson('/api/login', [
+            'email' => ' UNKNOWN@Example.COM ',
+            'password' => 'WrongPassword1',
+        ])
+            ->assertUnprocessable()
+            ->assertExactJson(['message' => 'Invalid credentials.']);
+
+        $this->assertDatabaseHas('auth_audit_logs', [
+            'user_id' => null,
+            'email' => 'unknown@example.com',
+            'event' => AuthAuditLog::EVENT_LOGIN,
+            'status' => AuthAuditLog::STATUS_FAILED,
+        ]);
     }
 
     public function test_authentication_endpoints_validate_their_input(): void
@@ -549,6 +607,40 @@ class AuthenticationTest extends TestCase
             ->assertTooManyRequests();
 
         $this->assertDatabaseCount('auth_audit_logs', 20);
+    }
+
+    public function test_login_is_rate_limited_when_one_email_rotates_ips_and_casing(): void
+    {
+        User::factory()->create([
+            'email' => 'target@example.com',
+            'password' => Hash::make('Password1'),
+        ]);
+
+        foreach (range(1, 10) as $attempt) {
+            $email = $attempt % 2 === 0
+                ? ' TARGET@Example.COM '
+                : 'target@example.com';
+
+            $this->withServerVariables(['REMOTE_ADDR' => "198.51.100.{$attempt}"])
+                ->postJson('/api/login', [
+                    'email' => $email,
+                    'password' => "WrongPassword{$attempt}",
+                ])
+                ->assertUnprocessable()
+                ->assertExactJson(['message' => 'Invalid credentials.']);
+        }
+
+        $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.11'])
+            ->postJson('/api/login', [
+                'email' => ' Target@EXAMPLE.com ',
+                'password' => 'WrongPassword11',
+            ])
+            ->assertTooManyRequests();
+
+        $this->assertDatabaseCount('auth_audit_logs', 10);
+        $this->assertDatabaseMissing('auth_audit_logs', [
+            'email' => ' Target@EXAMPLE.com ',
+        ]);
     }
 
     public function test_login_rate_limits_are_independent_between_ip_addresses(): void
