@@ -82,6 +82,7 @@ export async function apiRequest(path, { token, ...options } = {}) {
 
 | Method | Endpoint | Authentication | Purpose |
 | --- | --- | --- | --- |
+| `GET` | `/health` | No | Check application and database availability |
 | `POST` | `/register` | No | Create an unverified account and send a verification email |
 | `POST` | `/login` | No | Sign in a verified user and create a token |
 | `GET` | `/email/verify/{id}/{hash}` | Signed URL | Verify an email address |
@@ -95,6 +96,30 @@ export async function apiRequest(path, { token, ...options } = {}) {
 | `POST` | `/audits/{audit}/recommendations` | Yes | Generate and store an AI recommendation |
 | `GET` | `/audits/{audit}/recommendations` | Yes | Retrieve stored recommendations |
 | `GET` | `/dashboard` | Yes | Get user-specific summary statistics |
+
+## Health check
+
+`GET /api/health` is a public JSON endpoint for deployment health checks and uptime monitoring. It does not require authentication.
+
+When the application and database are reachable, it returns `200 OK`:
+
+```json
+{
+  "status": "ok",
+  "app": "AuditSEO API",
+  "database": "ok"
+}
+```
+
+If the database check fails, it returns `503 Service Unavailable` without exposing exception messages or other internal details:
+
+```json
+{
+  "status": "degraded",
+  "app": "AuditSEO API",
+  "database": "error"
+}
+```
 
 ## Authentication
 
