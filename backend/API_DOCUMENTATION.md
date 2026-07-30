@@ -987,6 +987,9 @@ Common error:
 - Set backend `CORS_ALLOWED_ORIGINS` to include the exact production frontend origin, including its scheme and any non-default port. Do not use a wildcard origin for authenticated frontend traffic.
 - Set backend `APP_URL` to the public HTTPS backend URL used to generate signed email-verification links.
 - Set backend `FRONTEND_URL` to the public HTTPS frontend URL.
+- Set `MAIL_MAILER=resend` in the production backend environment. Put the Resend API key in `RESEND_API_KEY` only in the real production `.env`; never commit the key or add it to `.env.example`.
+- Verify the production sending domain in Resend before sending production email. Configure the DNS records supplied by Resend in Cloudflare (or the domain's DNS provider), and wait for Resend to confirm verification.
+- Set `MAIL_FROM_ADDRESS` to an address on that verified domain and set `MAIL_FROM_NAME` to the desired sender name.
 - Production verification emails must contain HTTPS production URLs. A link generated for `localhost` or `127.0.0.1` will not provide a usable production verification flow.
 - Keep the complete signed verification URL unchanged when routing the user through the frontend or backend; modifying its signed parameters invalidates it.
 
