@@ -35,6 +35,21 @@ return Application::configure(basePath: dirname(__DIR__))
             }
 
             $previousException = $exception->getPrevious();
+            $httpStatus = $exception instanceof HttpExceptionInterface
+                ? $exception->getStatusCode()
+                : null;
+            $safeHttpMessages = [
+                400 => 'Bad request.',
+                401 => 'Unauthenticated.',
+                403 => 'Forbidden.',
+                404 => 'Resource not found.',
+                405 => 'Method not allowed.',
+                409 => 'Conflict.',
+                413 => 'Request entity too large.',
+                415 => 'Unsupported media type.',
+                422 => 'Unprocessable request.',
+                429 => 'Too many requests.',
+            ];
 
             return match (true) {
                 $exception instanceof AuthenticationException => response()->json([
@@ -56,9 +71,10 @@ return Application::configure(basePath: dirname(__DIR__))
                     'message' => 'Too many requests.',
                 ], 429),
                 $exception instanceof HttpExceptionInterface
-                    && $exception->getStatusCode() === 403 => response()->json([
-                        'message' => 'Forbidden.',
-                    ], 403),
+                    && $httpStatus >= 400
+                    && $httpStatus < 500 => response()->json([
+                        'message' => $safeHttpMessages[$httpStatus] ?? 'Request could not be completed.',
+                    ], $httpStatus),
                 default => response()->json([
                     'message' => 'Internal server error.',
                 ], 500),
