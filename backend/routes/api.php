@@ -8,18 +8,24 @@ use App\Http\Controllers\Api\EmailVerificationController;
 use App\Http\Controllers\Api\HealthCheckController;
 use Illuminate\Support\Facades\Route;
 
-Route::get('/health', [HealthCheckController::class, 'index']);
+Route::middleware('throttle:api-public')->group(function () {
+    Route::get('/health', [HealthCheckController::class, 'index']);
 
-Route::post('/register', [AuthController::class, 'register'])
-    ->middleware('throttle:register');
-Route::post('/login', [AuthController::class, 'login'])
-    ->middleware('throttle:login');
-Route::get('/email/verify/{id}/{hash}', [EmailVerificationController::class, 'verify'])
-    ->name('verification.verify');
-Route::post('/email/verification-notification', [EmailVerificationController::class, 'resend'])
-    ->middleware('throttle:verification');
+    Route::post('/register', [AuthController::class, 'register'])
+        ->middleware('throttle:register');
+    Route::post('/login', [AuthController::class, 'login'])
+        ->middleware('throttle:login');
+    Route::get('/email/verify/{id}/{hash}', [EmailVerificationController::class, 'verify'])
+        ->name('verification.verify');
+    Route::post('/email/verification-notification', [EmailVerificationController::class, 'resend'])
+        ->middleware('throttle:verification');
+});
 
-Route::middleware(['auth:sanctum', 'throttle:30,1'])->group(function () {
+Route::middleware([
+    'auth:sanctum',
+    'throttle:api-authenticated',
+    'throttle:30,1',
+])->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::post('/logout-all', [AuthController::class, 'logoutAll']);

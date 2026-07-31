@@ -10,6 +10,10 @@ use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
+    private const PUBLIC_API_REQUESTS_PER_MINUTE = 120;
+
+    private const AUTHENTICATED_API_REQUESTS_PER_MINUTE = 300;
+
     private const LOGIN_ATTEMPTS_PER_EMAIL_AND_IP = 5;
 
     private const LOGIN_ATTEMPTS_PER_EMAIL = 10;
@@ -35,6 +39,20 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        RateLimiter::for('api-public', function (Request $request) {
+            return Limit::perMinute(self::PUBLIC_API_REQUESTS_PER_MINUTE)
+                ->by('api-public:'.$request->ip());
+        });
+
+        RateLimiter::for('api-authenticated', function (Request $request) {
+            $userId = $request->user()?->getAuthIdentifier();
+
+            return Limit::perMinute(self::AUTHENTICATED_API_REQUESTS_PER_MINUTE)
+                ->by($userId === null
+                    ? 'api-authenticated:ip:'.$request->ip()
+                    : 'api-authenticated:user:'.$userId);
+        });
+
         RateLimiter::for('login', function (Request $request) {
             $email = EmailAddress::canonicalize((string) $request->input('email'));
             $ip = (string) $request->ip();

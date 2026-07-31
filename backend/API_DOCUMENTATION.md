@@ -375,6 +375,16 @@ Send `Authorization: Bearer <token>` for every endpoint in this table:
 
 Protected routes are generally limited to 30 requests per minute. More specific limits shown above replace that general limit for the applicable endpoint. A missing, expired, revoked, or invalid token returns `401 Unauthorized`.
 
+### Global application rate limits
+
+All public API endpoints, including the health check, registration, login, email verification, and verification resend endpoints, share a global limit of 120 requests per minute per source IP address. Stricter endpoint-specific login, registration, and verification limits still apply in addition to this shared budget.
+
+Authenticated API activity is also limited to 300 requests per minute per authenticated user ID, with an IP-address fallback when no authenticated identity is available. The existing 30-requests-per-minute limit on ordinary authenticated routes remains in effect, so the stricter limit wins. Audit creation remains limited to 10 requests per hour and AI recommendation generation remains limited to 5 requests per minute; both also remain inside the broader authenticated activity budget.
+
+Rate limits are shared across application instances through Laravel's configured rate-limiter cache store. Production should use Redis by setting `CACHE_STORE=redis` and `CACHE_LIMITER=redis` with the configured `REDIS_*` connection values. Tests use the in-memory array cache and do not require a Redis server.
+
+Application-level rate limiting reduces abusive traffic reaching controllers and external services, but it is not a replacement for network-level DDoS protection. Production must also use Cloudflare, Nginx request controls, firewall restrictions, and a correctly configured trusted-proxy chain.
+
 ## Audits
 
 All audit endpoints only expose audits owned by the authenticated user. Audit ownership is determined through the audit's domain.
@@ -1017,6 +1027,7 @@ Common error:
 - Set `MAIL_FROM_ADDRESS` to an address on that verified domain and set `MAIL_FROM_NAME` to the desired sender name.
 - Production verification emails must contain HTTPS production URLs. A link generated for `localhost` or `127.0.0.1` will not provide a usable production verification flow.
 - Keep the complete signed verification URL unchanged when routing the user through the frontend or backend; modifying its signed parameters invalidates it.
+- Use Redis for shared application cache and rate-limit counters in production (`CACHE_STORE=redis` and `CACHE_LIMITER=redis`). Ensure every application instance connects to the same protected Redis service.
 
 ## Common error formats and status codes
 
@@ -1072,7 +1083,7 @@ Render messages from `errors[field]` beside the matching form control. Login can
 
 ### `429 Too Many Requests`
 
-The client exceeded a route rate limit. Registration and AI recommendation generation are limited to 5 requests per minute. Login and verification resend also have email-and-IP and IP-only limits, so rotating email addresses does not bypass throttling. Protected routes have their documented general or endpoint-specific limits. Disable repeated submission and ask the user to retry later.
+The client exceeded a global or endpoint-specific route rate limit. Public API traffic has a shared 120-requests-per-minute per-IP budget, and authenticated activity has a shared 300-requests-per-minute per-user budget. Registration and AI recommendation generation are limited to 5 requests per minute, audit creation is limited to 10 requests per hour, and ordinary authenticated routes retain their 30-requests-per-minute limit. Login and verification resend also have email-and-IP and IP-only limits, so rotating email addresses does not bypass throttling. Disable repeated submission and ask the user to retry later.
 
 ### `502 AI service unavailable`
 
