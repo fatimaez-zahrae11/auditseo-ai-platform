@@ -165,7 +165,7 @@ Common errors:
 
 ### Login
 
-Authenticates an existing **verified** user and creates a new Sanctum token. Email input is trimmed and lowercased, so login is not case-sensitive.
+Authenticates an existing **verified** user and creates a new Sanctum token. The token expires after 1,440 minutes (24 hours). A successful login revokes all previously issued tokens for that user before creating the new token, so the API uses a single-session login policy. Email input is trimmed and lowercased, so login is not case-sensitive.
 
 - **Method:** `POST`
 - **URL:** `/login`
@@ -309,11 +309,11 @@ Successful response — `200 OK`:
 
 Common error:
 
-- `401 Unauthorized` when the token is missing, invalid, or revoked.
+- `401 Unauthorized` when the token is missing, invalid, expired, or revoked.
 
 ### Logout
 
-Revokes the token used for the current request.
+Revokes only the token used for the current request. Use logout-all when every token for the user must be revoked.
 
 - **Method:** `POST`
 - **URL:** `/logout`
@@ -336,7 +336,7 @@ Common error:
 
 ### Logout all sessions
 
-Revokes every Sanctum token belonging to the authenticated user.
+Revokes every Sanctum token belonging to the authenticated user, including tokens issued to other sessions.
 
 - **Method:** `POST`
 - **URL:** `/logout-all`
@@ -1028,6 +1028,8 @@ Common error:
 - Production verification emails must contain HTTPS production URLs. A link generated for `localhost` or `127.0.0.1` will not provide a usable production verification flow.
 - Keep the complete signed verification URL unchanged when routing the user through the frontend or backend; modifying its signed parameters invalidates it.
 - Use Redis through the installed Predis client for shared application cache and rate-limit counters in production (`CACHE_STORE=redis`, `CACHE_LIMITER=redis`, and `REDIS_CLIENT=predis`). Ensure every application instance connects to the same protected Redis service.
+- Keep `SANCTUM_EXPIRATION=1440` (1,440 minutes / 24 hours) or configure a shorter production lifetime. Sanctum rejects expired tokens automatically with `401 Unauthorized`.
+- Schedule `php artisan sanctum:prune-expired --hours=24` in production to remove token records that have been expired for at least 24 hours. This repository does not currently configure the production scheduler or cron entry; deployment must configure and monitor it. Pruning is database cleanup and is separate from Sanctum's automatic rejection of expired tokens.
 
 ## Common error formats and status codes
 

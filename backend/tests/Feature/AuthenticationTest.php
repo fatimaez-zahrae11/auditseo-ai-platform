@@ -45,6 +45,8 @@ class AuthenticationTest extends TestCase
 
     public function test_a_user_can_login_with_valid_credentials(): void
     {
+        $this->travelTo(now()->startOfSecond());
+
         $user = User::factory()->create([
             'email' => 'test@example.com',
             'password' => Hash::make('Password1'),
@@ -61,7 +63,10 @@ class AuthenticationTest extends TestCase
             ->assertJsonMissingPath('user.password');
 
         $this->assertDatabaseCount('personal_access_tokens', 1);
-        $this->assertNotNull($user->tokens()->firstOrFail()->expires_at);
+        $accessToken = $user->tokens()->firstOrFail();
+
+        $this->assertSame(1440, config('sanctum.expiration'));
+        $this->assertTrue($accessToken->expires_at->equalTo(now()->addDay()));
 
         $auditLog = AuthAuditLog::sole();
 
@@ -72,6 +77,30 @@ class AuthenticationTest extends TestCase
         $this->assertNotNull($auditLog->ip_address);
         $this->assertStringNotContainsString('Password1', $auditLog->toJson());
         $this->assertStringNotContainsString($response->json('token'), $auditLog->toJson());
+    }
+
+    public function test_expired_sanctum_tokens_cannot_access_protected_routes(): void
+    {
+        $user = User::factory()->create();
+        $expiredToken = $user->createToken(
+            'expired-token',
+            ['*'],
+            now()->subMinute(),
+        );
+
+        $response = $this->withToken($expiredToken->plainTextToken)
+            ->getJson('/api/me');
+
+        $response
+            ->assertUnauthorized()
+            ->assertExactJson([
+                'message' => 'Unauthenticated.',
+            ]);
+
+        $this->assertDatabaseHas('personal_access_tokens', [
+            'id' => $expiredToken->accessToken->id,
+        ]);
+        $this->assertStringNotContainsString($expiredToken->plainTextToken, $response->getContent());
     }
 
     public function test_unverified_users_cannot_login_or_receive_a_token(): void
