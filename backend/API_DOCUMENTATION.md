@@ -381,7 +381,7 @@ All public API endpoints, including the health check, registration, login, email
 
 Authenticated API activity is also limited to 300 requests per minute per authenticated user ID, with an IP-address fallback when no authenticated identity is available. The existing 30-requests-per-minute limit on ordinary authenticated routes remains in effect, so the stricter limit wins. Audit creation remains limited to 10 requests per hour and AI recommendation generation remains limited to 5 requests per minute; both also remain inside the broader authenticated activity budget.
 
-Rate limits are shared across application instances through Laravel's configured rate-limiter cache store. Production should use Redis by setting `CACHE_STORE=redis` and `CACHE_LIMITER=redis` with the configured `REDIS_*` connection values. Tests use the in-memory array cache and do not require a Redis server.
+Rate limits are shared across application instances through Laravel's configured rate-limiter cache store. This project uses the installed `predis/predis` package, so production should set `CACHE_STORE=redis`, `CACHE_LIMITER=redis`, and `REDIS_CLIENT=predis` with the configured `REDIS_*` connection values. Tests use the in-memory array cache and do not require a Redis server.
 
 Application-level rate limiting reduces abusive traffic reaching controllers and external services, but it is not a replacement for network-level DDoS protection. Production must also use Cloudflare, Nginx request controls, firewall restrictions, and a correctly configured trusted-proxy chain.
 
@@ -1027,7 +1027,7 @@ Common error:
 - Set `MAIL_FROM_ADDRESS` to an address on that verified domain and set `MAIL_FROM_NAME` to the desired sender name.
 - Production verification emails must contain HTTPS production URLs. A link generated for `localhost` or `127.0.0.1` will not provide a usable production verification flow.
 - Keep the complete signed verification URL unchanged when routing the user through the frontend or backend; modifying its signed parameters invalidates it.
-- Use Redis for shared application cache and rate-limit counters in production (`CACHE_STORE=redis` and `CACHE_LIMITER=redis`). Ensure every application instance connects to the same protected Redis service.
+- Use Redis through the installed Predis client for shared application cache and rate-limit counters in production (`CACHE_STORE=redis`, `CACHE_LIMITER=redis`, and `REDIS_CLIENT=predis`). Ensure every application instance connects to the same protected Redis service.
 
 ## Common error formats and status codes
 
