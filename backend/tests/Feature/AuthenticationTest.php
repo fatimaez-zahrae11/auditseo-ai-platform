@@ -350,18 +350,38 @@ class AuthenticationTest extends TestCase
             'email' => 'test@example.com',
             'password' => Hash::make('Password1'),
         ]);
-        $firstOldToken = $user->createToken('old-token-1')->accessToken;
-        $secondOldToken = $user->createToken('old-token-2')->accessToken;
 
-        $this->postJson('/api/login', [
+        $firstLogin = $this->postJson('/api/login', [
             'email' => 'test@example.com',
             'password' => 'Password1',
         ])->assertOk();
+        $firstToken = $firstLogin->json('token');
+        $firstTokenId = $user->tokens()->sole()->id;
+
+        $secondLogin = $this->postJson('/api/login', [
+            'email' => 'test@example.com',
+            'password' => 'Password1',
+        ])->assertOk();
+        $secondToken = $secondLogin->json('token');
 
         $this->assertDatabaseCount('personal_access_tokens', 1);
-        $this->assertDatabaseMissing('personal_access_tokens', ['id' => $firstOldToken->id]);
-        $this->assertDatabaseMissing('personal_access_tokens', ['id' => $secondOldToken->id]);
+        $this->assertDatabaseMissing('personal_access_tokens', ['id' => $firstTokenId]);
         $this->assertNotNull($user->tokens()->firstOrFail()->expires_at);
+        $this->assertNotSame($firstToken, $secondToken);
+
+        $this->app['auth']->forgetGuards();
+
+        $this->withToken($firstToken)
+            ->getJson('/api/me')
+            ->assertUnauthorized()
+            ->assertExactJson(['message' => 'Unauthenticated.']);
+
+        $this->app['auth']->forgetGuards();
+
+        $this->withToken($secondToken)
+            ->getJson('/api/me')
+            ->assertOk()
+            ->assertJsonPath('user.id', $user->id);
     }
 
     public function test_login_returns_the_same_error_for_an_invalid_password_and_unknown_email(): void
@@ -529,7 +549,8 @@ class AuthenticationTest extends TestCase
 
         $this->withToken($currentToken->plainTextToken)
             ->getJson('/api/me')
-            ->assertUnauthorized();
+            ->assertUnauthorized()
+            ->assertExactJson(['message' => 'Unauthenticated.']);
 
         $this->app['auth']->forgetGuards();
 
@@ -565,13 +586,15 @@ class AuthenticationTest extends TestCase
 
         $this->withToken($firstToken)
             ->getJson('/api/me')
-            ->assertUnauthorized();
+            ->assertUnauthorized()
+            ->assertExactJson(['message' => 'Unauthenticated.']);
 
         $this->app['auth']->forgetGuards();
 
         $this->withToken($secondToken)
             ->getJson('/api/me')
-            ->assertUnauthorized();
+            ->assertUnauthorized()
+            ->assertExactJson(['message' => 'Unauthenticated.']);
     }
 
     public function test_register_is_rate_limited(): void
