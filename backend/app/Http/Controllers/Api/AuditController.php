@@ -34,6 +34,7 @@ class AuditController extends Controller
         );
 
         $this->extendExecutionTimeForAudit();
+        $startedAt = now();
 
         try {
             $rawData = $crawler->crawl($url);
@@ -52,6 +53,9 @@ class AuditController extends Controller
         $audit = $domain->audits()->create([
             ...$scores,
             'raw_data' => $rawData,
+            'status' => Audit::STATUS_COMPLETED,
+            'started_at' => $startedAt,
+            'completed_at' => now(),
         ]);
 
         $this->createIssues($audit, $rawData);

@@ -393,6 +393,8 @@ All audit endpoints only expose audits owned by the authenticated user. Audit ow
 
 Crawls a public HTTP or HTTPS URL, calculates SEO scores, creates detected issues, and stores the audit.
 
+Queue processing is prepared but not enabled for this endpoint yet. `POST /audits` still performs the audit synchronously and returns `201 Created`; it does not return `202 Accepted`. The queued job is an integration skeleton and must not be dispatched until the existing crawl, scoring, and issue-generation flow is connected to it and production workers are configured.
+
 - **Method:** `POST`
 - **URL:** `/audits`
 - **Authentication:** Required
@@ -422,6 +424,10 @@ Successful response — `201 Created`:
     "content_score": 75,
     "links_score": 70,
     "performance_score": 100,
+    "status": "completed",
+    "started_at": "2026-07-19T10:14:55.000000Z",
+    "completed_at": "2026-07-19T10:15:00.000000Z",
+    "failed_at": null,
     "raw_data": {
       "title": null,
       "meta_description": "Example description",
@@ -493,6 +499,8 @@ Successful response — `201 Created`:
   }
 }
 ```
+
+Audit status can be `pending`, `running`, `completed`, or `failed`. Internal failure details are not included in API responses.
 
 Common errors:
 

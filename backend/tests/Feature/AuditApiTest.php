@@ -169,6 +169,8 @@ class AuditApiTest extends TestCase
             ->assertJsonPath('audit.content_score', 65)
             ->assertJsonPath('audit.links_score', 100)
             ->assertJsonPath('audit.performance_score', 100)
+            ->assertJsonPath('audit.status', Audit::STATUS_COMPLETED)
+            ->assertJsonMissingPath('audit.failure_reason')
             ->assertJsonPath('raw_data.title', 'Example Page')
             ->assertJsonPath('raw_data.meta_description', 'Example description')
             ->assertJsonPath('raw_data.robots_txt_found', true)
@@ -185,8 +187,12 @@ class AuditApiTest extends TestCase
             'content_score' => 65,
             'links_score' => 100,
             'performance_score' => 100,
+            'status' => Audit::STATUS_COMPLETED,
         ]);
-        $this->assertSame('Example Page', Audit::findOrFail($response->json('audit.id'))->raw_data['title']);
+        $audit = Audit::findOrFail($response->json('audit.id'));
+        $this->assertSame('Example Page', $audit->raw_data['title']);
+        $this->assertNotNull($audit->started_at);
+        $this->assertNotNull($audit->completed_at);
         Http::assertSentCount(5);
     }
 
