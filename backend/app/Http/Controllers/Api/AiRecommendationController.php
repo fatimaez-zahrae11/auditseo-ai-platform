@@ -56,6 +56,12 @@ class AiRecommendationController extends Controller
             ->whereHas('domain', fn ($query) => $query->where('user_id', $request->user()->id))
             ->findOrFail($audit);
 
+        if ($ownedAudit->status !== Audit::STATUS_COMPLETED) {
+            return response()->json([
+                'message' => 'AI recommendations are only available after the audit is completed.',
+            ], 409);
+        }
+
         try {
             $result = $service->generate($ownedAudit);
         } catch (AiRecommendationException) {

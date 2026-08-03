@@ -338,7 +338,9 @@ class AiRecommendationService
     private function buildPrompt(Audit $audit): string
     {
         $auditData = [
-            'url' => $audit->domain?->url,
+            'url' => $audit->final_url
+                ?? $audit->requested_url
+                ?? $audit->domain?->url,
             'scores' => [
                 'global' => $audit->global_score,
                 'technical' => $audit->technical_score,

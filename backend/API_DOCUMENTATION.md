@@ -818,7 +818,9 @@ The frontend must never call the configured AI provider directly. It calls Larav
 
 ### Generate an AI recommendation
 
-Requests a new recommendation for an existing owned audit and stores the successful result.
+Requests a new recommendation for an existing owned, completed audit and stores the successful result. AI recommendation generation remains synchronous: once the audit is completed, this request calls the configured provider and waits for its response.
+
+The frontend must poll `GET /audits/{id}` until the audit status is `completed` before enabling recommendation generation. Audits that are still `pending` or `running`, or that ended as `failed`, are not sent to the AI provider.
 
 - **Method:** `POST`
 - **URL:** `/audits/{audit}/recommendations`
@@ -856,6 +858,14 @@ Common errors:
 
 - `401 Unauthorized` when authentication is missing or invalid.
 - `404 Not Found` when the audit does not exist or belongs to another user.
+- `409 Conflict` when the audit is not completed:
+
+```json
+{
+  "message": "AI recommendations are only available after the audit is completed."
+}
+```
+
 - `429 Too Many Requests` when the generation rate limit is exceeded.
 - `502 AI service unavailable` when the external AI request fails:
 

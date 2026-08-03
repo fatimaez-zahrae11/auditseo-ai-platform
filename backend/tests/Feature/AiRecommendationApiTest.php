@@ -263,6 +263,71 @@ class AiRecommendationApiTest extends TestCase
         $this->assertNotEmpty($response->json('recommendation.prompt_summary'));
     }
 
+    public function test_pending_audit_cannot_generate_a_recommendation_or_call_the_provider(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user, [
+            'status' => Audit::STATUS_PENDING,
+            'started_at' => null,
+            'completed_at' => null,
+        ]);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertStatus(409)
+            ->assertExactJson([
+                'message' => 'AI recommendations are only available after the audit is completed.',
+            ]);
+
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertDatabaseCount('api_usage_logs', 0);
+    }
+
+    public function test_running_audit_cannot_generate_a_recommendation_or_call_the_provider(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user, [
+            'status' => Audit::STATUS_RUNNING,
+            'completed_at' => null,
+        ]);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertStatus(409)
+            ->assertExactJson([
+                'message' => 'AI recommendations are only available after the audit is completed.',
+            ]);
+
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertDatabaseCount('api_usage_logs', 0);
+    }
+
+    public function test_failed_audit_cannot_generate_a_recommendation_or_expose_failure_details(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user, [
+            'status' => Audit::STATUS_FAILED,
+            'completed_at' => null,
+            'failed_at' => now(),
+            'failure_reason' => 'Sensitive crawler exception details.',
+        ]);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertStatus(409)
+            ->assertExactJson([
+                'message' => 'AI recommendations are only available after the audit is completed.',
+            ])
+            ->assertDontSee('Sensitive crawler exception details')
+            ->assertDontSee(self::AI_KEY);
+
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertDatabaseCount('api_usage_logs', 0);
+    }
+
     public function test_valid_https_allowed_provider_host_generates_a_recommendation(): void
     {
         $user = User::factory()->create();
@@ -404,6 +469,44 @@ class AiRecommendationApiTest extends TestCase
                 && str_contains($userPrompt, '"scores"')
                 && str_contains($userPrompt, '"raw_data"')
                 && str_contains($userPrompt, '"issues"');
+        });
+    }
+
+    public function test_ai_prompt_uses_the_audit_final_url_when_available(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user, [
+            'requested_url' => 'https://example.com/requested-path',
+            'final_url' => 'https://example.com/final-path',
+        ]);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")->assertCreated();
+
+        Http::assertSent(function (Request $request): bool {
+            $userPrompt = $request->data()['messages'][1]['content'] ?? '';
+
+            return str_contains($userPrompt, '"url": "https://example.com/final-path"')
+                && ! str_contains($userPrompt, '"url": "https://example.com/requested-path"');
+        });
+    }
+
+    public function test_ai_prompt_falls_back_to_the_audit_requested_url_when_final_url_is_null(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user, [
+            'requested_url' => 'https://example.com/requested-only-path',
+            'final_url' => null,
+        ]);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")->assertCreated();
+
+        Http::assertSent(function (Request $request): bool {
+            $userPrompt = $request->data()['messages'][1]['content'] ?? '';
+
+            return str_contains($userPrompt, '"url": "https://example.com/requested-only-path"')
+                && ! str_contains($userPrompt, '"url": "https://example.com"');
         });
     }
 
@@ -718,7 +821,10 @@ class AiRecommendationApiTest extends TestCase
         );
     }
 
-    private function createAuditFor(User $user): Audit
+    /**
+     * @param  array<string, mixed>  $attributes
+     */
+    private function createAuditFor(User $user, array $attributes = []): Audit
     {
         $domain = Domain::create([
             'user_id' => $user->id,
@@ -732,12 +838,18 @@ class AiRecommendationApiTest extends TestCase
             'content_score' => 60,
             'links_score' => 70,
             'performance_score' => 70,
+            'requested_url' => 'https://example.com/requested-page',
+            'final_url' => 'https://example.com/final-page',
+            'status' => Audit::STATUS_COMPLETED,
+            'started_at' => now()->subMinute(),
+            'completed_at' => now(),
             'raw_data' => [
                 'title' => null,
                 'meta_description' => 'Example description',
                 'h1_count' => 1,
                 'links_count' => 0,
             ],
+            ...$attributes,
         ]);
 
         $audit->issues()->create([
