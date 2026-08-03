@@ -31,6 +31,7 @@ Route::middleware([
     Route::post('/logout-all', [AuthController::class, 'logoutAll']);
 
     Route::middleware('verified')->group(function () {
+        Route::get('/health/readiness', [HealthCheckController::class, 'readiness']);
         Route::get('/dashboard', [DashboardController::class, 'index']);
 
         Route::post('/audits', [AuditController::class, 'store'])

@@ -82,7 +82,8 @@ export async function apiRequest(path, { token, ...options } = {}) {
 
 | Method | Endpoint | Authentication | Purpose |
 | --- | --- | --- | --- |
-| `GET` | `/health` | No | Check application and database availability |
+| `GET` | `/health` | No | Generic application health check |
+| `GET` | `/health/readiness` | Yes, verified | Check protected production readiness signals |
 | `POST` | `/register` | No | Create an unverified account and send a verification email |
 | `POST` | `/login` | No | Sign in a verified user and create a token |
 | `GET` | `/email/verify/{id}/{hash}` | Signed URL | Verify an email address |
@@ -99,27 +100,51 @@ export async function apiRequest(path, { token, ...options } = {}) {
 
 ## Health check
 
-`GET /api/health` is a public JSON endpoint for deployment health checks and uptime monitoring. It does not require authentication.
+`GET /api/health` is a public JSON endpoint for basic deployment health checks and uptime monitoring. It does not require authentication and intentionally returns no component or infrastructure details.
 
 When the application and database are reachable, it returns `200 OK`:
 
 ```json
 {
-  "status": "ok",
-  "app": "AuditSEO API",
-  "database": "ok"
+  "status": "ok"
 }
 ```
 
-If the database check fails, it returns `503 Service Unavailable` without exposing exception messages or other internal details:
+If the database check fails, it returns `503 Service Unavailable` without identifying the failed dependency or exposing exception messages:
 
 ```json
 {
-  "status": "degraded",
-  "app": "AuditSEO API",
-  "database": "error"
+  "status": "degraded"
 }
 ```
+
+### Readiness check
+
+`GET /api/health/readiness` is protected by Sanctum authentication and verified-email middleware. It is intended for authorized operations and monitoring clients, not anonymous public monitoring.
+
+The readiness check verifies database connectivity. It also pings the configured Redis connections when either the active queue connection or active cache store uses Redis. It reports audit-processing symptoms by counting pending audits older than the configured pending threshold, running audits older than the configured running threshold, and failed audits within the configured recent-failure window. Defaults are 10 minutes, 5 minutes, and 60 minutes respectively; deployments can set `HEALTH_STALE_PENDING_MINUTES`, `HEALTH_STALE_RUNNING_MINUTES`, and `HEALTH_RECENT_FAILED_MINUTES`.
+
+A ready response returns `200 OK` and only safe labels and counts:
+
+```json
+{
+  "status": "ready",
+  "checks": {
+    "database": "ok",
+    "redis": "ok",
+    "audit_queue": "ok"
+  },
+  "audit_counts": {
+    "stale_pending": 0,
+    "stale_running": 0,
+    "recent_failed": 0
+  }
+}
+```
+
+When neither the active queue nor cache configuration uses Redis, `checks.redis` is `not_required`. A failed required dependency or stale pending/running audit changes the response to `503 Service Unavailable` with `status` set to `not_ready`. If the database cannot be queried, `checks.audit_queue` is `not_checked` and audit counts are omitted. Responses never include connection names, hosts, ports, credentials, exception messages, stack traces, or internal paths.
+
+This endpoint does not prove that Supervisor, systemd, or a queue worker process is running because the application has no worker-heartbeat mechanism. Redis reachability and stale or failed audit counts detect symptoms only. Production must still supervise queue workers with Supervisor/systemd (or the deployment platform's equivalent) and use external monitoring for worker processes, queue depth, failures, and alerts.
 
 ## Authentication
 
@@ -364,6 +389,7 @@ Send `Authorization: Bearer <token>` for every endpoint in this table:
 | Endpoint | Additional behavior |
 | --- | --- |
 | `GET /me` | Returns the authenticated user |
+| `GET /health/readiness` | Requires a verified email; returns safe global readiness signals |
 | `POST /logout` | Revokes the current token |
 | `POST /logout-all` | Revokes every token for the user |
 | `GET /dashboard` | Requires a verified email |
@@ -1042,6 +1068,7 @@ Common error:
 - Production verification emails must contain HTTPS production URLs. A link generated for `localhost` or `127.0.0.1` will not provide a usable production verification flow.
 - Keep the complete signed verification URL unchanged when routing the user through the frontend or backend; modifying its signed parameters invalidates it.
 - Use Redis through the installed Predis client for queues, shared application cache, and rate-limit counters in production (`QUEUE_CONNECTION=redis`, `CACHE_STORE=redis`, `CACHE_LIMITER=redis`, and `REDIS_CLIENT=predis`). Ensure every application instance and queue worker connects to the same protected Redis service.
+- Supervise production queue workers with Supervisor, systemd, or the deployment platform's equivalent and monitor them externally. The protected readiness endpoint detects Redis failures and stale audit symptoms but cannot prove that a worker supervisor or worker process is running without a separate heartbeat.
 - Keep `SANCTUM_EXPIRATION=1440` (1,440 minutes / 24 hours) or configure a shorter production lifetime. Sanctum rejects expired tokens automatically with `401 Unauthorized`.
 - Schedule `php artisan sanctum:prune-expired --hours=24` in production to remove token records that have been expired for at least 24 hours. This repository does not currently configure the production scheduler or cron entry; deployment must configure and monitor it. Pruning is database cleanup and is separate from Sanctum's automatic rejection of expired tokens.
 
