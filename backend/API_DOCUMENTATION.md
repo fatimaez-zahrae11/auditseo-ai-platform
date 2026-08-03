@@ -493,25 +493,19 @@ Successful response — `200 OK`:
     {
       "id": 12,
       "domain_id": 4,
+      "requested_url": "https://example.com/page",
+      "final_url": "https://example.com/page",
+      "status": "completed",
       "global_score": 86,
       "technical_score": 100,
       "content_score": 75,
       "links_score": 70,
       "performance_score": 100,
-      "raw_data": {
-        "title": "Example Page",
-        "meta_description": "Example description"
-      },
       "created_at": "2026-07-19T10:15:00.000000Z",
       "updated_at": "2026-07-19T10:15:00.000000Z",
-      "domain": {
-        "id": 4,
-        "user_id": 1,
-        "domain_name": "example.com",
-        "url": "https://example.com/page",
-        "created_at": "2026-07-19T10:15:00.000000Z",
-        "updated_at": "2026-07-19T10:15:00.000000Z"
-      }
+      "started_at": "2026-07-19T10:15:01.000000Z",
+      "completed_at": "2026-07-19T10:15:05.000000Z",
+      "failed_at": null
     }
   ],
   "pagination": {
@@ -529,6 +523,8 @@ Successful response — `200 OK`:
 }
 ```
 
+Each item is a summary containing only `id`, `domain_id`, `requested_url`, `final_url`, `status`, the five score fields, `created_at`, `updated_at`, `started_at`, `completed_at`, and `failed_at`. The index does not include `raw_data`, `failure_reason`, the nested domain, issues, AI recommendations, or crawl/page details. Fetch `GET /audits/{id}` for the complete owned audit.
+
 The response always uses separate `audits` and `pagination` objects. `previous_page_url` is `null` on the first page, and `next_page_url` is `null` on the last page. When the user has no audits, `audits` is an empty array; `from` and `to` are `null`.
 
 Common error:
@@ -539,7 +535,7 @@ Common error:
 
 Returns one owned audit, including its domain and detected issues.
 
-The full professional SEO analysis is available in `audit.raw_data`. Detected audit issues are available in `audit.issues`.
+The full professional SEO analysis is available in `audit.raw_data`. Detected audit issues are available in `audit.issues`. Unlike the summary index, this detail response retains the domain, requested/final URLs, scores, lifecycle fields, full `raw_data`, and issue details.
 
 - **Method:** `GET`
 - **URL:** `/audits/{id}`

@@ -2282,7 +2282,17 @@ class AuditApiTest extends TestCase
     {
         $user = User::factory()->create();
         $otherUser = User::factory()->create();
-        $ownAudit = $this->createAuditFor($user, 'own.example.com');
+        $startedAt = now()->startOfSecond()->subMinute();
+        $ownAudit = $this->createAuditFor($user, 'own.example.com', [
+            'requested_url' => 'https://own.example.com/requested',
+            'final_url' => 'https://own.example.com/final',
+            'status' => Audit::STATUS_RUNNING,
+            'started_at' => $startedAt,
+            'raw_data' => [
+                'large_nested_crawl_data' => str_repeat('private-detail-', 100),
+            ],
+            'failure_reason' => 'Internal failure details.',
+        ]);
         $otherAudit = $this->createAuditFor($otherUser, 'other.example.com');
         Sanctum::actingAs($user);
 
@@ -2292,7 +2302,18 @@ class AuditApiTest extends TestCase
             ->assertOk()
             ->assertJsonCount(1, 'audits')
             ->assertJsonPath('audits.0.id', $ownAudit->id)
-            ->assertJsonPath('audits.0.domain.user_id', $user->id)
+            ->assertJsonPath('audits.0.domain_id', $ownAudit->domain_id)
+            ->assertJsonPath('audits.0.requested_url', 'https://own.example.com/requested')
+            ->assertJsonPath('audits.0.final_url', 'https://own.example.com/final')
+            ->assertJsonPath('audits.0.status', Audit::STATUS_RUNNING)
+            ->assertJsonPath('audits.0.started_at', $startedAt->toJSON())
+            ->assertJsonPath('audits.0.completed_at', null)
+            ->assertJsonPath('audits.0.failed_at', null)
+            ->assertJsonMissingPath('audits.0.raw_data')
+            ->assertJsonMissingPath('audits.0.failure_reason')
+            ->assertJsonMissingPath('audits.0.domain')
+            ->assertJsonMissingPath('audits.0.issues')
+            ->assertJsonMissingPath('audits.0.ai_recommendations')
             ->assertJsonPath('pagination.current_page', 1)
             ->assertJsonPath('pagination.per_page', 20)
             ->assertJsonPath('pagination.total', 1)
@@ -2311,6 +2332,62 @@ class AuditApiTest extends TestCase
                 ],
             ])
             ->assertJsonMissing(['id' => $otherAudit->id]);
+
+        $this->assertEqualsCanonicalizing([
+            'id',
+            'domain_id',
+            'requested_url',
+            'final_url',
+            'status',
+            'global_score',
+            'technical_score',
+            'content_score',
+            'links_score',
+            'performance_score',
+            'created_at',
+            'updated_at',
+            'started_at',
+            'completed_at',
+            'failed_at',
+        ], array_keys($response->json('audits.0')));
+    }
+
+    public function test_audit_index_returns_every_async_status_as_a_summary(): void
+    {
+        $user = User::factory()->create();
+        $audits = collect([
+            Audit::STATUS_PENDING,
+            Audit::STATUS_RUNNING,
+            Audit::STATUS_COMPLETED,
+            Audit::STATUS_FAILED,
+        ])->mapWithKeys(function (string $status) use ($user): array {
+            $audit = $this->createAuditFor($user, "{$status}.example.com", [
+                'requested_url' => "https://{$status}.example.com/page",
+                'status' => $status,
+                'started_at' => $status === Audit::STATUS_PENDING ? null : now()->subMinutes(2),
+                'completed_at' => $status === Audit::STATUS_COMPLETED ? now()->subMinute() : null,
+                'failed_at' => $status === Audit::STATUS_FAILED ? now()->subMinute() : null,
+                'failure_reason' => $status === Audit::STATUS_FAILED ? 'Sensitive failure detail.' : null,
+                'raw_data' => ['status_private_data' => $status],
+            ]);
+
+            return [$audit->id => $status];
+        });
+        Sanctum::actingAs($user);
+
+        $response = $this->getJson('/api/audits');
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(4, 'audits')
+            ->assertJsonPath('pagination.total', 4);
+
+        $summaries = collect($response->json('audits'))->keyBy('id');
+        foreach ($audits as $auditId => $status) {
+            $this->assertSame($status, $summaries[$auditId]['status']);
+            $this->assertArrayNotHasKey('raw_data', $summaries[$auditId]);
+            $this->assertArrayNotHasKey('failure_reason', $summaries[$auditId]);
+        }
     }
 
     public function test_audit_index_is_paginated_twenty_per_page(): void
@@ -2354,13 +2431,39 @@ class AuditApiTest extends TestCase
     public function test_an_authenticated_user_can_view_their_own_audit(): void
     {
         $user = User::factory()->create();
-        $audit = $this->createAuditFor($user, 'own.example.com');
+        $audit = $this->createAuditFor($user, 'own.example.com', [
+            'requested_url' => 'https://own.example.com/requested',
+            'final_url' => 'https://own.example.com/final',
+            'status' => Audit::STATUS_COMPLETED,
+            'started_at' => now()->subMinute(),
+            'completed_at' => now(),
+            'raw_data' => [
+                'title' => 'Detailed audit title',
+                'crawled_pages' => [
+                    ['url' => 'https://own.example.com/internal'],
+                ],
+            ],
+        ]);
+        $issue = $audit->issues()->create([
+            'category' => 'content',
+            'title' => 'Detailed audit issue',
+            'severity' => 'important',
+            'description' => 'Detailed evidence.',
+            'recommendation' => 'Detailed recommendation.',
+        ]);
         Sanctum::actingAs($user);
 
         $this->getJson("/api/audits/{$audit->id}")
             ->assertOk()
             ->assertJsonPath('audit.id', $audit->id)
-            ->assertJsonPath('audit.domain.user_id', $user->id);
+            ->assertJsonPath('audit.domain.user_id', $user->id)
+            ->assertJsonPath('audit.status', Audit::STATUS_COMPLETED)
+            ->assertJsonPath('audit.requested_url', 'https://own.example.com/requested')
+            ->assertJsonPath('audit.final_url', 'https://own.example.com/final')
+            ->assertJsonPath('audit.raw_data.title', 'Detailed audit title')
+            ->assertJsonPath('audit.raw_data.crawled_pages.0.url', 'https://own.example.com/internal')
+            ->assertJsonPath('audit.issues.0.id', $issue->id)
+            ->assertJsonPath('audit.issues.0.title', 'Detailed audit issue');
     }
 
     public function test_an_authenticated_user_cannot_view_another_users_audit(): void
@@ -2373,7 +2476,10 @@ class AuditApiTest extends TestCase
         $this->getJson("/api/audits/{$otherAudit->id}")->assertNotFound();
     }
 
-    private function createAuditFor(User $user, string $domainName): Audit
+    /**
+     * @param  array<string, mixed>  $attributes
+     */
+    private function createAuditFor(User $user, string $domainName, array $attributes = []): Audit
     {
         $domain = Domain::create([
             'user_id' => $user->id,
@@ -2388,6 +2494,7 @@ class AuditApiTest extends TestCase
             'links_score' => 0,
             'performance_score' => 0,
             'raw_data' => null,
+            ...$attributes,
         ]);
     }
 

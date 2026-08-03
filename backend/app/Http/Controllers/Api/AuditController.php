@@ -9,11 +9,30 @@ use App\Models\Audit;
 use App\Models\Domain;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
 class AuditController extends Controller
 {
+    private const SUMMARY_FIELDS = [
+        'id',
+        'domain_id',
+        'requested_url',
+        'final_url',
+        'status',
+        'global_score',
+        'technical_score',
+        'content_score',
+        'links_score',
+        'performance_score',
+        'created_at',
+        'updated_at',
+        'started_at',
+        'completed_at',
+        'failed_at',
+    ];
+
     public function store(StoreAuditRequest $request): JsonResponse
     {
         $url = $request->validated('url');
@@ -74,13 +93,16 @@ class AuditController extends Controller
     public function index(Request $request): JsonResponse
     {
         $audits = Audit::query()
-            ->with('domain')
+            ->select(self::SUMMARY_FIELDS)
             ->whereHas('domain', fn ($query) => $query->where('user_id', $request->user()->id))
             ->latest()
             ->paginate(20);
 
         return response()->json([
-            'audits' => $audits->items(),
+            'audits' => collect($audits->items())
+                ->map(fn (Audit $audit): array => Arr::only($audit->toArray(), self::SUMMARY_FIELDS))
+                ->values()
+                ->all(),
             'pagination' => [
                 'current_page' => $audits->currentPage(),
                 'last_page' => $audits->lastPage(),
