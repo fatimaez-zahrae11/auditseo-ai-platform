@@ -757,45 +757,45 @@ Title, meta-description, and H1 duplicate groups use this compact shape:
 
 Content duplicate groups replace `value` with a short `fingerprint`. Group URL samples, thin-page samples, canonical-conflict samples, and sitemap-orphan samples are limited. A thin-page sample contains `url` and `word_count`; a canonical-conflict sample contains `url` and `canonical_url`.
 
-### Audit response example
+### Completed audit detail example
 
-This is a shortened audit creation response. The real response can contain additional model timestamps, domain data, and `raw_data` fields. Audit issue objects are serialized under `issues`.
+This is a shortened `GET /audits/{id}` response after queue processing has completed. POST `/audits` does not return this data; it returns `202 Accepted` with the pending audit summary and polling URL documented above.
 
 ```json
 {
-  "message": "Audit created successfully.",
   "audit": {
     "id": 12,
+    "status": "completed",
     "global_score": 82,
     "technical_score": 88,
     "content_score": 72,
     "links_score": 78,
-    "performance_score": 90
-  },
-  "raw_data": {
-    "http_status_code": 200,
-    "final_url": "https://example.com/page",
-    "title": "Example Page",
-    "word_count": 240,
-    "internal_links_count": 8,
-    "broken_links_count": 1,
-    "compression_enabled": true,
-    "structured_data_found": true,
-    "schema_types": ["Organization", "WebSite"],
-    "crawled_pages_count": 4,
-    "thin_content_pages_count": 1,
-    "duplicate_content_count": 0,
-    "canonical_conflicts_count": 0
-  },
-  "issues": [
-    {
-      "category": "content",
-      "title": "Thin content pages found",
-      "severity": "important",
-      "description": "1 crawled page(s) contain fewer than 300 visible words.",
-      "recommendation": "Expand thin pages with useful, original information or consolidate pages that do not warrant separate URLs."
-    }
-  ]
+    "performance_score": 90,
+    "raw_data": {
+      "http_status_code": 200,
+      "final_url": "https://example.com/page",
+      "title": "Example Page",
+      "word_count": 240,
+      "internal_links_count": 8,
+      "broken_links_count": 1,
+      "compression_enabled": true,
+      "structured_data_found": true,
+      "schema_types": ["Organization", "WebSite"],
+      "crawled_pages_count": 4,
+      "thin_content_pages_count": 1,
+      "duplicate_content_count": 0,
+      "canonical_conflicts_count": 0
+    },
+    "issues": [
+      {
+        "category": "content",
+        "title": "Thin content pages found",
+        "severity": "important",
+        "description": "1 crawled page(s) contain fewer than 300 visible words.",
+        "recommendation": "Expand thin pages with useful, original information or consolidate pages that do not warrant separate URLs."
+      }
+    ]
+  }
 }
 ```
 

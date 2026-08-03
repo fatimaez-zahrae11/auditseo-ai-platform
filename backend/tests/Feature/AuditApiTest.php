@@ -155,19 +155,38 @@ class AuditApiTest extends TestCase
     }
 
     /**
-     * Execute the queued job after the real HTTP request so crawler regression
-     * tests remain focused on the completed audit result.
+     * Execute the real queued job directly for crawler/processing regressions.
+     *
+     * The returned 200 response is a test-only processing snapshot. It is not
+     * the response contract of POST /api/audits.
      */
-    public function postJson($uri, array $data = [], array $headers = [], $options = 0)
+    private function processAuditThroughJob(array $data): TestResponse
     {
-        $response = parent::postJson($uri, $data, $headers, $options);
+        $user = auth()->user();
+        $this->assertInstanceOf(User::class, $user);
+        $url = $data['url'] ?? null;
+        $this->assertIsString($url);
+        $domainName = strtolower((string) parse_url($url, PHP_URL_HOST));
 
-        if ($uri !== '/api/audits' || $response->getStatusCode() !== 202) {
-            return $response;
-        }
+        $domain = Domain::firstOrCreate(
+            [
+                'user_id' => $user->id,
+                'domain_name' => $domainName,
+            ],
+            ['url' => $url],
+        );
+        $audit = $domain->audits()->create([
+            'global_score' => 0,
+            'technical_score' => 0,
+            'content_score' => 0,
+            'links_score' => 0,
+            'performance_score' => 0,
+            'raw_data' => null,
+            'requested_url' => $url,
+            'status' => Audit::STATUS_PENDING,
+        ]);
 
-        $auditId = (int) $response->json('audit.id');
-        $job = new RunSeoAuditJob($auditId);
+        $job = new RunSeoAuditJob($audit->id);
 
         try {
             $job->handle($this->app->make(AuditProcessingService::class));
@@ -194,25 +213,19 @@ class AuditApiTest extends TestCase
             ], 502));
         }
 
-        $audit = Audit::with(['domain', 'issues'])->findOrFail($auditId);
+        $audit = Audit::with(['domain', 'issues'])->findOrFail($audit->id);
 
         return TestResponse::fromBaseResponse(response()->json([
-            'message' => 'Audit created successfully.',
             'audit' => $audit,
             'domain' => $audit->domain,
             'issues' => $audit->issues,
             'raw_data' => $audit->raw_data,
-        ], 201));
-    }
-
-    private function postQueuedAudit(array $data): TestResponse
-    {
-        return parent::postJson('/api/audits', $data);
+        ]));
     }
 
     public function test_unauthenticated_users_cannot_access_audit_routes(): void
     {
-        $this->postJson('/api/audits', ['url' => 'https://example.com'])->assertUnauthorized();
+        parent::postJson('/api/audits', ['url' => 'https://example.com'])->assertUnauthorized();
         $this->getJson('/api/audits')->assertUnauthorized();
         $this->getJson('/api/audits/1')->assertUnauthorized();
     }
@@ -224,7 +237,7 @@ class AuditApiTest extends TestCase
         $crawler = $this->mock(SeoCrawlerService::class);
         $crawler->shouldNotReceive('crawl');
 
-        $response = $this->postQueuedAudit([
+        $response = parent::postJson('/api/audits', [
             'url' => 'https://example.com/page',
         ]);
 
@@ -234,7 +247,11 @@ class AuditApiTest extends TestCase
             ->assertJsonCount(3, 'audit')
             ->assertJsonPath('audit.status', Audit::STATUS_PENDING)
             ->assertJsonPath('audit.requested_url', 'https://example.com/page')
-            ->assertJsonPath('poll_url', '/api/audits/'.$response->json('audit.id'));
+            ->assertJsonPath('poll_url', '/api/audits/'.$response->json('audit.id'))
+            ->assertJsonMissingPath('audit.raw_data')
+            ->assertJsonMissingPath('audit.issues')
+            ->assertJsonMissingPath('audit.global_score');
+        $this->assertNotSame(201, $response->getStatusCode());
 
         $this->assertDatabaseHas('domains', [
             'user_id' => $user->id,
@@ -264,9 +281,40 @@ class AuditApiTest extends TestCase
         $this->getJson("/api/audits/{$audit->id}")
             ->assertOk()
             ->assertJsonPath('audit.status', Audit::STATUS_PENDING)
-            ->assertJsonPath('audit.requested_url', 'https://example.com/page');
+            ->assertJsonPath('audit.requested_url', 'https://example.com/page')
+            ->assertJsonPath('audit.raw_data', null);
 
         $this->forgetMock(SeoCrawlerService::class);
+    }
+
+    public function test_polling_returns_the_completed_audit_after_the_dispatched_job_is_processed(): void
+    {
+        $user = User::factory()->create();
+        Sanctum::actingAs($user);
+
+        $queuedResponse = parent::postJson('/api/audits', [
+            'url' => 'https://example.com/polling',
+        ])->assertAccepted();
+        $auditId = (int) $queuedResponse->json('audit.id');
+
+        $this->getJson("/api/audits/{$auditId}")
+            ->assertOk()
+            ->assertJsonPath('audit.status', Audit::STATUS_PENDING)
+            ->assertJsonPath('audit.raw_data', null);
+
+        (new RunSeoAuditJob($auditId))->handle($this->app->make(AuditProcessingService::class));
+
+        $this->getJson("/api/audits/{$auditId}")
+            ->assertOk()
+            ->assertJsonPath('audit.status', Audit::STATUS_COMPLETED)
+            ->assertJsonPath('audit.requested_url', 'https://example.com/polling')
+            ->assertJsonPath('audit.raw_data.final_url', 'https://example.com/polling')
+            ->assertJsonStructure([
+                'audit' => [
+                    'issues',
+                    'raw_data',
+                ],
+            ]);
     }
 
     public function test_queue_dispatch_failure_marks_the_audit_failed_and_returns_a_safe_service_error(): void
@@ -281,7 +329,7 @@ class AuditApiTest extends TestCase
             ->andThrow(new Exception('Redis password=secret and internal queue details.'));
         $this->app->instance(BusDispatcher::class, $dispatcher);
 
-        $response = $this->postQueuedAudit([
+        $response = parent::postJson('/api/audits', [
             'url' => 'https://example.com/dispatch-failure',
         ]);
 
@@ -322,7 +370,7 @@ class AuditApiTest extends TestCase
             ->with($requestedUrl)
             ->andThrow(new Exception("Sensitive transport details for {$requestedUrl}"));
 
-        $response = $this->postJson('/api/audits', [
+        $response = $this->processAuditThroughJob([
             'url' => $requestedUrl,
         ]);
         $this->forgetMock(SeoCrawlerService::class);
@@ -362,7 +410,7 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', [
+        $response = $this->processAuditThroughJob([
             'url' => 'https://example.com/page',
         ]);
 
@@ -393,7 +441,7 @@ class AuditApiTest extends TestCase
             : Http::response($this->completeHtml()));
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/start']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/start']);
 
         $response
             ->assertStatus(502)
@@ -416,7 +464,7 @@ class AuditApiTest extends TestCase
         ));
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
             ->assertStatus(502)
             ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
 
@@ -434,7 +482,7 @@ class AuditApiTest extends TestCase
         ));
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
             ->assertStatus(502)
             ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
 
@@ -451,7 +499,7 @@ class AuditApiTest extends TestCase
         ));
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
             ->assertStatus(502)
             ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
 
@@ -484,7 +532,7 @@ class AuditApiTest extends TestCase
         });
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
             ->assertStatus(502)
             ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
 
@@ -519,8 +567,8 @@ class AuditApiTest extends TestCase
         });
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.title', 'Example Page')
             ->assertJsonPath('raw_data.page_size_bytes', strlen($body));
 
@@ -533,8 +581,8 @@ class AuditApiTest extends TestCase
         $this->fakeSecondaryResourceStream('/robots.txt', 600_000, [], $progress);
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.robots_txt_found', false)
             ->assertJsonPath('raw_data.robots_txt_status_code', null);
 
@@ -548,8 +596,8 @@ class AuditApiTest extends TestCase
         $this->fakeSecondaryResourceStream('/sitemap.xml', 11_000_000, [], $progress);
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.sitemap_xml_found', false)
             ->assertJsonPath('raw_data.sitemap_xml_status_code', null);
 
@@ -579,8 +627,8 @@ class AuditApiTest extends TestCase
         });
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.sitemap_xml_is_valid', true)
             ->assertJsonPath('raw_data.sitemap_urls_count', 0);
 
@@ -612,8 +660,8 @@ class AuditApiTest extends TestCase
         });
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.checked_links_count', 1)
             ->assertJsonPath('raw_data.broken_links_count', 1);
 
@@ -625,10 +673,10 @@ class AuditApiTest extends TestCase
     {
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.robots_txt_found', true)
             ->assertJsonPath('raw_data.robots_txt_status_code', 200)
             ->assertJsonPath('raw_data.sitemap_xml_found', true)
@@ -655,10 +703,10 @@ class AuditApiTest extends TestCase
             ROBOTS;
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/private/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/private/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.robots_txt_status_code', 200)
             ->assertJsonPath('raw_data.robots_txt_sitemap_urls.0', 'https://example.com/sitemap.xml')
             ->assertJsonPath('raw_data.robots_txt_disallow_rules_count', 2)
@@ -679,8 +727,8 @@ class AuditApiTest extends TestCase
             ROBOTS;
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/private/allowed/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/private/allowed/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.robots_txt_allows_audited_url', true)
             ->assertJsonMissing(['title' => 'Audited URL is blocked by robots.txt']);
     }
@@ -696,10 +744,10 @@ class AuditApiTest extends TestCase
             XML;
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.sitemap_xml_status_code', 200)
             ->assertJsonPath('raw_data.sitemap_xml_is_valid', true)
             ->assertJsonPath('raw_data.sitemap_urls_count', 2)
@@ -716,10 +764,10 @@ class AuditApiTest extends TestCase
         $this->sitemapBody = '<urlset><url><loc>https://example.com/page</loc></urlset>';
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.sitemap_xml_found', true)
             ->assertJsonPath('raw_data.sitemap_xml_is_valid', false)
             ->assertJsonPath('audit.technical_score', 80)
@@ -739,8 +787,8 @@ class AuditApiTest extends TestCase
             XML;
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.sitemap_contains_audited_url', false)
             ->assertJsonFragment([
                 'title' => 'Audited URL is missing from sitemap',
@@ -759,10 +807,10 @@ class AuditApiTest extends TestCase
             XML;
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.sitemap_https_urls_count', 1)
             ->assertJsonPath('raw_data.sitemap_non_https_urls_count', 1)
             ->assertJsonFragment([
@@ -783,10 +831,10 @@ class AuditApiTest extends TestCase
         $this->linkStatuses['https://example.com/broken-sitemap-entry'] = 410;
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.sitemap_checked_urls_count', 2)
             ->assertJsonPath('raw_data.sitemap_broken_urls_count', 1)
             ->assertJsonPath(
@@ -809,8 +857,8 @@ class AuditApiTest extends TestCase
         $this->sitemapBody = "<urlset>{$locations}</urlset>";
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.sitemap_urls_count', 100)
             ->assertJsonPath('raw_data.sitemap_checked_urls_count', 25);
     }
@@ -820,10 +868,10 @@ class AuditApiTest extends TestCase
         $this->robotsStatus = 404;
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.robots_txt_found', false)
             ->assertJsonPath('raw_data.robots_txt_status_code', 404)
             ->assertJsonPath('audit.technical_score', 80)
@@ -836,10 +884,10 @@ class AuditApiTest extends TestCase
         $this->sitemapStatus = 404;
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.sitemap_xml_found', false)
             ->assertJsonPath('raw_data.sitemap_xml_status_code', 404)
             ->assertJsonPath('audit.technical_score', 80)
@@ -852,10 +900,10 @@ class AuditApiTest extends TestCase
         $user = User::factory()->create();
         Sanctum::actingAs($user);
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.title', 'Example Page')
             ->assertJsonPath('raw_data.meta_description', 'Example description')
             ->assertJsonPath('raw_data.h1_count', 1)
@@ -882,10 +930,10 @@ class AuditApiTest extends TestCase
             HTML);
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.title_length', mb_strlen($title))
             ->assertJsonPath('raw_data.meta_description_length', mb_strlen($description))
             ->assertJsonPath('raw_data.h1_texts.0', 'Professional SEO Audit Guide')
@@ -926,8 +974,8 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonFragment([
                 'title' => 'Page title is too short',
                 'category' => 'content',
@@ -945,8 +993,8 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonFragment([
                 'title' => 'Page title is too long',
                 'category' => 'content',
@@ -964,8 +1012,8 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonFragment([
                 'title' => 'Meta description is too short',
                 'category' => 'content',
@@ -983,8 +1031,8 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonFragment([
                 'title' => 'Meta description is too long',
                 'category' => 'content',
@@ -1002,10 +1050,10 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.word_count', 12)
             ->assertJsonFragment([
                 'title' => 'Low word count',
@@ -1024,10 +1072,10 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.title_matches_h1', false)
             ->assertJsonFragment([
                 'title' => 'Page title does not align with H1',
@@ -1053,8 +1101,8 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.images_alt_missing_ratio', 0.6667)
             ->assertJsonFragment([
                 'title' => 'High image alt text missing ratio',
@@ -1071,10 +1119,10 @@ class AuditApiTest extends TestCase
             HTML);
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.links_count', 2)
             ->assertJsonPath('raw_data.internal_links_count', 1)
             ->assertJsonPath('raw_data.external_links_count', 1)
@@ -1092,10 +1140,10 @@ class AuditApiTest extends TestCase
             HTML);
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.empty_anchor_links_count', 1)
             ->assertJsonPath('raw_data.generic_anchor_links_count', 1)
             ->assertJsonFragment([
@@ -1116,10 +1164,10 @@ class AuditApiTest extends TestCase
         $this->linkStatuses['https://example.com/broken'] = 404;
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.checked_links_count', 1)
             ->assertJsonPath('raw_data.broken_links_count', 1)
             ->assertJsonPath('raw_data.broken_links_sample.0', 'https://example.com/broken')
@@ -1142,10 +1190,10 @@ class AuditApiTest extends TestCase
             HTML);
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.links_count', 5)
             ->assertJsonPath('raw_data.checked_links_count', 0)
             ->assertJsonPath('raw_data.broken_links_count', 0);
@@ -1162,10 +1210,10 @@ class AuditApiTest extends TestCase
         $this->responseHtml = $this->htmlWithLinks($links);
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.links_count', 32)
             ->assertJsonPath('raw_data.internal_links_count', 32)
             ->assertJsonPath('raw_data.checked_links_count', 25);
@@ -1177,8 +1225,8 @@ class AuditApiTest extends TestCase
         $this->responseHtml = $this->htmlWithLinks('');
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.links_count', 0)
             ->assertJsonFragment([
                 'title' => 'No links found',
@@ -1207,10 +1255,10 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.crawl_enabled', true)
             ->assertJsonPath('raw_data.crawl_max_pages', 10)
             ->assertJsonPath('raw_data.crawl_max_depth', 2)
@@ -1240,10 +1288,10 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.discovered_internal_urls_count', 1)
             ->assertJsonPath('raw_data.crawled_pages_count', 2)
             ->assertJsonPath('raw_data.crawled_pages.1.status_code', 200)
@@ -1282,8 +1330,8 @@ class AuditApiTest extends TestCase
         $this->responseHtml = $this->htmlWithLinks($links);
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.discovered_internal_urls_count', 15)
             ->assertJsonPath('raw_data.crawled_pages_count', 10);
     }
@@ -1317,10 +1365,10 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.crawled_pages_count', 3)
             ->assertJsonPath('raw_data.crawled_pages.2.depth', 2);
 
@@ -1369,10 +1417,10 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.pages_with_missing_title_count', 1)
             ->assertJsonPath('raw_data.pages_with_missing_meta_description_count', 1)
             ->assertJsonPath('raw_data.pages_with_missing_h1_count', 1)
@@ -1406,10 +1454,10 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.pages_with_noindex_count', 1)
             ->assertJsonPath('raw_data.pages_with_http_errors_count', 1)
             ->assertJsonFragment(['title' => 'Crawled pages are marked noindex', 'category' => 'indexability', 'severity' => 'important'])
@@ -1434,10 +1482,10 @@ class AuditApiTest extends TestCase
         }
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.duplicate_titles_count', 1)
             ->assertJsonPath('raw_data.duplicate_meta_descriptions_count', 1)
             ->assertJsonPath('raw_data.duplicate_h1_count', 1)
@@ -1483,10 +1531,10 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.duplicate_content_count', 1)
             ->assertJsonPath('raw_data.duplicate_content_groups.0.count', 2)
             ->assertJsonCount(2, 'raw_data.duplicate_content_groups.0.urls')
@@ -1520,8 +1568,8 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.thin_content_pages_count', 1)
             ->assertJsonPath('raw_data.thin_content_pages_sample.0.url', 'https://example.com/thin-only')
             ->assertJsonPath('raw_data.thin_content_pages_sample.0.word_count', 7)
@@ -1550,8 +1598,8 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.canonical_conflicts_count', 1)
             ->assertJsonPath('raw_data.site_quality_warnings_count', 1)
             ->assertJsonPath('raw_data.canonical_conflicts_sample.0.url', 'https://example.com/canonical-conflict')
@@ -1573,8 +1621,8 @@ class AuditApiTest extends TestCase
             XML;
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.sitemap_urls_sample', [
                 'https://example.com/page',
                 'https://example.com/orphan-page',
@@ -1593,10 +1641,10 @@ class AuditApiTest extends TestCase
         $this->responseHtml = '<html lang="en"><head><link rel="canonical" href="/"><meta name="viewport" content="width=device-width"><meta name="description" content="Present"></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('audit.content_score', 50)
             ->assertJsonFragment(['title' => 'Missing page title']);
         $this->assertDatabaseHas('audit_issues', ['title' => 'Missing page title']);
@@ -1607,10 +1655,10 @@ class AuditApiTest extends TestCase
         $this->responseHtml = '<html lang="en"><head><link rel="canonical" href="/"><meta name="viewport" content="width=device-width"><title>Present</title></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('audit.content_score', 50)
             ->assertJsonFragment(['title' => 'Missing meta description']);
         $this->assertDatabaseHas('audit_issues', ['title' => 'Missing meta description']);
@@ -1620,10 +1668,10 @@ class AuditApiTest extends TestCase
     {
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'http://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'http://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('audit.technical_score', 60)
             ->assertJsonFragment(['title' => 'Page does not use HTTPS']);
     }
@@ -1633,10 +1681,10 @@ class AuditApiTest extends TestCase
         $this->responseHtml = '<html lang="en"><head><link rel="canonical" href="/page"><meta name="viewport" content="width=device-width"><meta name="description" content="Present"><script type="application/ld+json">{"@type":"WebPage"}</script></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('audit.technical_score', 100)
             ->assertJsonPath('audit.content_score', 50)
             ->assertJsonPath('audit.links_score', 70)
@@ -1651,8 +1699,8 @@ class AuditApiTest extends TestCase
         $this->sitemapStatus = 404;
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'http://example.com/page']);
-        $response->assertCreated();
+        $response = $this->processAuditThroughJob(['url' => 'http://example.com/page']);
+        $response->assertOk();
 
         foreach (['global_score', 'technical_score', 'content_score', 'links_score', 'performance_score'] as $score) {
             $value = $response->json("audit.{$score}");
@@ -1667,10 +1715,10 @@ class AuditApiTest extends TestCase
         $this->responseHtml = '<html><head><title>Present</title><meta name="description" content="Present"></head><body><h1>Heading</h1><img src="one.jpg"><img src="two.jpg" alt=""></body></html>';
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.images_missing_alt_count', 2)
             ->assertJsonFragment(['title' => 'Images missing alt text']);
         $this->assertDatabaseHas('audit_issues', [
@@ -1699,10 +1747,10 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.structured_data_found', true)
             ->assertJsonPath('raw_data.structured_data_formats', ['json_ld'])
             ->assertJsonPath('raw_data.json_ld_count', 2)
@@ -1734,10 +1782,10 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.structured_data_found', true)
             ->assertJsonPath('raw_data.json_ld_count', 7)
             ->assertJsonPath('raw_data.structured_data_errors_count', 7)
@@ -1763,8 +1811,8 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.structured_data_found', true)
             ->assertJsonPath('raw_data.structured_data_formats', ['microdata', 'rdfa'])
             ->assertJsonPath('raw_data.microdata_found', true)
@@ -1781,10 +1829,10 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.structured_data_found', false)
             ->assertJsonPath('raw_data.structured_data_formats', [])
             ->assertJsonPath('raw_data.schema_types', [])
@@ -1805,8 +1853,8 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/'])
+            ->assertOk()
             ->assertJsonPath('raw_data.recommended_schema_types_missing', ['Organization', 'WebSite'])
             ->assertJsonFragment([
                 'title' => 'Recommended schema types are missing',
@@ -1824,8 +1872,8 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.recommended_schema_types_missing', ['BreadcrumbList'])
             ->assertJsonFragment([
                 'title' => 'Breadcrumb navigation lacks BreadcrumbList schema',
@@ -1843,8 +1891,8 @@ class AuditApiTest extends TestCase
         );
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/blog/seo-guide'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/blog/seo-guide'])
+            ->assertOk()
             ->assertJsonPath('raw_data.recommended_schema_types_missing', ['Article']);
     }
 
@@ -1868,10 +1916,10 @@ class AuditApiTest extends TestCase
             HTML;
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/technical']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/technical']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.http_status_code', 200)
             ->assertJsonPath('raw_data.final_url', 'https://example.com/technical')
             ->assertJsonPath('raw_data.redirect_count', 0)
@@ -1898,10 +1946,10 @@ class AuditApiTest extends TestCase
     {
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.content_type', 'text/html; charset=UTF-8')
             ->assertJsonPath('raw_data.content_encoding', 'gzip')
             ->assertJsonPath('raw_data.compression_enabled', true)
@@ -1923,10 +1971,10 @@ class AuditApiTest extends TestCase
         $this->responseDelayMicroseconds = 2_050_000;
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonFragment([
                 'title' => 'Page response is slow',
                 'category' => 'performance',
@@ -1941,10 +1989,10 @@ class AuditApiTest extends TestCase
         $this->responseDelayMicroseconds = 5_050_000;
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonFragment([
                 'title' => 'Page response is very slow',
                 'category' => 'performance',
@@ -1959,8 +2007,8 @@ class AuditApiTest extends TestCase
         $this->responseHtml .= str_repeat(' ', 1_000_001);
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonFragment([
                 'title' => 'HTML page payload is large',
                 'category' => 'performance',
@@ -1974,8 +2022,8 @@ class AuditApiTest extends TestCase
         $this->responseHtml .= str_repeat(' ', 3_000_001);
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonFragment([
                 'title' => 'HTML page payload is very large',
                 'category' => 'performance',
@@ -1989,8 +2037,8 @@ class AuditApiTest extends TestCase
         unset($this->responseHeaders['Content-Encoding']);
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.content_encoding', null)
             ->assertJsonPath('raw_data.compression_enabled', false)
             ->assertJsonFragment([
@@ -2005,8 +2053,8 @@ class AuditApiTest extends TestCase
         unset($this->responseHeaders['Cache-Control']);
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.cache_control', null)
             ->assertJsonPath('raw_data.cache_headers_present', false)
             ->assertJsonFragment([
@@ -2021,8 +2069,8 @@ class AuditApiTest extends TestCase
         $this->responseHeaders['Content-Type'] = 'application/json';
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.content_type', 'application/json')
             ->assertJsonPath('raw_data.is_html_response', false)
             ->assertJsonFragment([
@@ -2037,10 +2085,10 @@ class AuditApiTest extends TestCase
         $this->responseHtml = '<html><head><title>Page</title><meta name="description" content="Description"></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.canonical_url', null)
             ->assertJsonPath('raw_data.viewport_found', false)
             ->assertJsonPath('raw_data.html_lang', null)
@@ -2054,10 +2102,10 @@ class AuditApiTest extends TestCase
         $this->responseHtml = '<html lang="en"><head><title>Page</title><meta name="description" content="Description"><meta name="viewport" content="width=device-width"><meta name="robots" content="noindex, follow"><link rel="canonical" href="/page"></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.meta_robots', 'noindex, follow')
             ->assertJsonPath('raw_data.is_indexable', false)
             ->assertJsonFragment(['title' => 'Page is marked noindex', 'category' => 'indexability', 'severity' => 'critical']);
@@ -2068,10 +2116,10 @@ class AuditApiTest extends TestCase
         $this->pageStatus = 404;
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/page']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/page']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('raw_data.http_status_code', 404)
             ->assertJsonPath('raw_data.is_indexable', false)
             ->assertJsonFragment(['title' => 'Page does not return HTTP 200', 'category' => 'technical', 'severity' => 'critical']);
@@ -2085,10 +2133,10 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $response = $this->postJson('/api/audits', ['url' => 'https://example.com/start']);
+        $response = $this->processAuditThroughJob(['url' => 'https://example.com/start']);
 
         $response
-            ->assertCreated()
+            ->assertOk()
             ->assertJsonPath('audit.requested_url', 'https://example.com/start')
             ->assertJsonPath('audit.final_url', 'https://example.com/page')
             ->assertJsonPath('raw_data.final_url', 'https://example.com/page')
@@ -2102,7 +2150,7 @@ class AuditApiTest extends TestCase
         Sanctum::actingAs(User::factory()->create());
 
         foreach (['http://localhost', 'http://127.0.0.1'] as $url) {
-            $this->postJson('/api/audits', ['url' => $url])
+            parent::postJson('/api/audits', ['url' => $url])
                 ->assertUnprocessable()
                 ->assertJsonValidationErrors('url');
         }
@@ -2116,7 +2164,7 @@ class AuditApiTest extends TestCase
         Sanctum::actingAs(User::factory()->create());
 
         foreach ([[], ['url' => 'not-a-url'], ['url' => 'ftp://example.com']] as $payload) {
-            $this->postJson('/api/audits', $payload)
+            parent::postJson('/api/audits', $payload)
                 ->assertUnprocessable()
                 ->assertJsonValidationErrors('url');
         }
@@ -2136,7 +2184,7 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/start'])
+        $this->processAuditThroughJob(['url' => 'https://example.com/start'])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('url');
 
@@ -2161,7 +2209,7 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/start'])
+        $this->processAuditThroughJob(['url' => 'https://example.com/start'])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('url');
 
@@ -2201,7 +2249,7 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/start'])
+        $this->processAuditThroughJob(['url' => 'https://example.com/start'])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('url');
 
@@ -2220,8 +2268,8 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.robots_txt_found', false);
 
         Http::assertNotSent(fn (Request $request) => $request->url() === $destination);
@@ -2242,8 +2290,8 @@ class AuditApiTest extends TestCase
         ];
         Sanctum::actingAs(User::factory()->create());
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/page'])
-            ->assertCreated()
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertOk()
             ->assertJsonPath('raw_data.checked_links_count', 0);
 
         Http::assertSent(fn (Request $request) => $request->url() === $link);
@@ -2255,18 +2303,18 @@ class AuditApiTest extends TestCase
         $user = User::factory()->create();
         Sanctum::actingAs($user);
 
-        $firstResponse = $this->postJson('/api/audits', ['url' => 'https://example.com/first'])
-            ->assertCreated()
+        $firstResponse = parent::postJson('/api/audits', ['url' => 'https://example.com/first'])
+            ->assertAccepted()
             ->assertJsonPath('audit.requested_url', 'https://example.com/first');
-        $secondResponse = $this->postJson('/api/audits', ['url' => 'https://example.com/second'])
-            ->assertCreated()
+        $secondResponse = parent::postJson('/api/audits', ['url' => 'https://example.com/second'])
+            ->assertAccepted()
             ->assertJsonPath('audit.requested_url', 'https://example.com/second');
 
         $this->assertDatabaseCount('domains', 1);
         $this->assertDatabaseCount('audits', 2);
         $this->assertSame(
-            $firstResponse->json('audit.domain_id'),
-            $secondResponse->json('audit.domain_id'),
+            Audit::findOrFail($firstResponse->json('audit.id'))->domain_id,
+            Audit::findOrFail($secondResponse->json('audit.id'))->domain_id,
         );
         $this->assertDatabaseHas('audits', [
             'id' => $firstResponse->json('audit.id'),
