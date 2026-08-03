@@ -393,7 +393,7 @@ All audit endpoints only expose audits owned by the authenticated user. Audit ow
 
 Crawls a public HTTP or HTTPS URL, calculates SEO scores, creates detected issues, and stores the audit.
 
-Queue processing is prepared but not enabled for this endpoint yet. `POST /audits` still performs the audit synchronously and returns `201 Created`; it does not return `202 Accepted`. The queued job is an integration skeleton and must not be dispatched until the existing crawl, scoring, and issue-generation flow is connected to it and production workers are configured.
+Queue processing is prepared but not enabled for this endpoint yet. `POST /audits` still performs the audit synchronously and returns `201 Created`; it does not return `202 Accepted`. The queued job now uses the shared audit-processing service, but async dispatch and production worker configuration are still pending.
 
 - **Method:** `POST`
 - **URL:** `/audits`
@@ -424,6 +424,8 @@ Successful response — `201 Created`:
     "content_score": 75,
     "links_score": 70,
     "performance_score": 100,
+    "requested_url": "https://example.com/page",
+    "final_url": "https://www.example.com/page",
     "status": "completed",
     "started_at": "2026-07-19T10:14:55.000000Z",
     "completed_at": "2026-07-19T10:15:00.000000Z",
@@ -499,6 +501,8 @@ Successful response — `201 Created`:
   }
 }
 ```
+
+`requested_url` is the exact validated URL submitted for that audit. `final_url` is the final page URL reached by the crawler after safe redirect handling and may be `null` until processing completes. These audit-specific values are independent from the domain's host-level identity.
 
 Audit status can be `pending`, `running`, `completed`, or `failed`. Internal failure details are not included in API responses.
 

@@ -6,6 +6,9 @@ use App\Jobs\RunSeoAuditJob;
 use App\Models\Audit;
 use App\Models\Domain;
 use App\Models\User;
+use App\Services\Audit\AuditProcessingService;
+use App\Services\Seo\SeoCrawlerService;
+use App\Services\Seo\SeoScoringService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -28,6 +31,8 @@ class AuditQueueArchitectureTest extends TestCase
         $this->assertNull($audit->completed_at);
         $this->assertNull($audit->failed_at);
         $this->assertNull($audit->failure_reason);
+        $this->assertSame('https://example.com/requested', $audit->requested_url);
+        $this->assertNull($audit->final_url);
 
         $audit->update([
             'status' => Audit::STATUS_RUNNING,
@@ -35,6 +40,8 @@ class AuditQueueArchitectureTest extends TestCase
             'completed_at' => now(),
             'failed_at' => now(),
             'failure_reason' => 'Internal failure detail.',
+            'requested_url' => 'https://example.com/updated',
+            'final_url' => 'https://www.example.com/final',
         ]);
         $audit->refresh();
 
@@ -43,6 +50,8 @@ class AuditQueueArchitectureTest extends TestCase
         $this->assertInstanceOf(\DateTimeInterface::class, $audit->completed_at);
         $this->assertInstanceOf(\DateTimeInterface::class, $audit->failed_at);
         $this->assertIsArray($audit->raw_data);
+        $this->assertSame('https://example.com/updated', $audit->requested_url);
+        $this->assertSame('https://www.example.com/final', $audit->final_url);
         $this->assertArrayNotHasKey('failure_reason', $audit->toArray());
 
         $databaseDefaultAuditId = DB::table('audits')->insertGetId([
@@ -57,6 +66,28 @@ class AuditQueueArchitectureTest extends TestCase
         $this->assertTrue(collect(Schema::getIndexes('audits'))->contains(
             fn (array $index): bool => $index['columns'] === ['status'],
         ));
+    }
+
+    public function test_audit_url_migration_can_be_reversed_and_reapplied_on_sqlite(): void
+    {
+        $this->assertTrue(Schema::hasColumns('audits', [
+            'requested_url',
+            'final_url',
+        ]));
+
+        $migration = require database_path('migrations/2026_08_03_000000_add_requested_and_final_urls_to_audits_table.php');
+
+        $migration->down();
+
+        $this->assertFalse(Schema::hasColumn('audits', 'requested_url'));
+        $this->assertFalse(Schema::hasColumn('audits', 'final_url'));
+
+        $migration->up();
+
+        $this->assertTrue(Schema::hasColumns('audits', [
+            'requested_url',
+            'final_url',
+        ]));
     }
 
     public function test_audit_status_migration_can_be_reversed_and_reapplied_on_sqlite(): void
@@ -90,8 +121,19 @@ class AuditQueueArchitectureTest extends TestCase
 
     public function test_run_seo_audit_job_records_running_and_completed_transitions(): void
     {
-        $audit = $this->createAudit();
+        $requestedUrl = 'https://example.com/queued-path?view=full';
+        $finalUrl = 'https://www.example.com/final-path';
+        $audit = $this->createAudit([
+            'requested_url' => $requestedUrl,
+        ]);
         $statuses = [];
+        $rawData = $this->completeRawData($finalUrl);
+        $crawler = $this->mock(SeoCrawlerService::class);
+        $crawler->shouldReceive('crawl')
+            ->once()
+            ->with($requestedUrl)
+            ->andReturn($rawData);
+        $processingService = new AuditProcessingService($crawler, new SeoScoringService);
 
         Audit::updated(function (Audit $updatedAudit) use (&$statuses, $audit): void {
             if ($updatedAudit->is($audit)) {
@@ -104,7 +146,7 @@ class AuditQueueArchitectureTest extends TestCase
         $this->assertInstanceOf(ShouldQueue::class, $job);
         $this->assertSame($audit->id, $job->auditId);
 
-        $job->handle();
+        $job->handle($processingService);
         $audit->refresh();
 
         $this->assertSame([Audit::STATUS_RUNNING, Audit::STATUS_COMPLETED], $statuses);
@@ -113,6 +155,40 @@ class AuditQueueArchitectureTest extends TestCase
         $this->assertNotNull($audit->completed_at);
         $this->assertNull($audit->failed_at);
         $this->assertNull($audit->failure_reason);
+        $this->assertSame($requestedUrl, $audit->requested_url);
+        $this->assertSame($finalUrl, $audit->final_url);
+        $this->assertEquals($rawData, $audit->raw_data);
+    }
+
+    public function test_run_seo_audit_job_uses_requested_url_and_fails_generically_on_processing_exception(): void
+    {
+        $requestedUrl = 'https://example.com/exact-path?token=stored-value';
+        $audit = $this->createAudit([
+            'requested_url' => $requestedUrl,
+        ]);
+        $crawler = $this->mock(SeoCrawlerService::class);
+        $crawler->shouldReceive('crawl')
+            ->once()
+            ->with($requestedUrl)
+            ->andThrow(new RuntimeException('Sensitive provider response with secret details.'));
+        $processingService = new AuditProcessingService($crawler, new SeoScoringService);
+
+        try {
+            (new RunSeoAuditJob($audit->id))->handle($processingService);
+            $this->fail('The processing exception was not rethrown.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Sensitive provider response with secret details.', $exception->getMessage());
+        }
+
+        $audit->refresh();
+
+        $this->assertSame(Audit::STATUS_FAILED, $audit->status);
+        $this->assertNotNull($audit->started_at);
+        $this->assertNotNull($audit->failed_at);
+        $this->assertNull($audit->completed_at);
+        $this->assertSame(AuditProcessingService::GENERIC_FAILURE_REASON, $audit->failure_reason);
+        $this->assertStringNotContainsString('Sensitive', $audit->failure_reason);
+        $this->assertArrayNotHasKey('failure_reason', $audit->toArray());
     }
 
     public function test_run_seo_audit_job_failure_callback_stores_only_a_generic_reason(): void
@@ -175,7 +251,69 @@ class AuditQueueArchitectureTest extends TestCase
             'links_score' => 0,
             'performance_score' => 0,
             'raw_data' => ['title' => 'Example'],
+            'requested_url' => 'https://example.com/requested',
             ...$attributes,
         ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function completeRawData(string $finalUrl): array
+    {
+        return [
+            'title' => 'A descriptive page title for content SEO',
+            'title_length' => 40,
+            'meta_description' => str_repeat('Useful description ', 5),
+            'meta_description_length' => 95,
+            'word_count' => 500,
+            'h1_count' => 1,
+            'h2_count' => 1,
+            'title_matches_h1' => true,
+            'heading_structure' => [
+                ['tag' => 'h1', 'text' => 'A descriptive page title for content SEO'],
+                ['tag' => 'h2', 'text' => 'Section'],
+            ],
+            'images_missing_alt_count' => 0,
+            'images_alt_missing_ratio' => 0.0,
+            'uses_https' => true,
+            'robots_txt_found' => true,
+            'sitemap_xml_found' => true,
+            'robots_txt_allows_audited_url' => true,
+            'sitemap_xml_is_valid' => true,
+            'sitemap_non_https_urls_count' => 0,
+            'sitemap_broken_urls_count' => 0,
+            'pages_with_http_errors_count' => 0,
+            'pages_with_missing_title_count' => 0,
+            'pages_with_missing_meta_description_count' => 0,
+            'pages_with_missing_h1_count' => 0,
+            'pages_with_noindex_count' => 0,
+            'pages_with_low_word_count_count' => 0,
+            'duplicate_titles_count' => 0,
+            'duplicate_meta_descriptions_count' => 0,
+            'duplicate_h1_count' => 0,
+            'duplicate_title_groups' => [],
+            'duplicate_meta_description_groups' => [],
+            'duplicate_h1_groups' => [],
+            'duplicate_content_count' => 0,
+            'thin_content_pages_count' => 0,
+            'canonical_conflicts_count' => 0,
+            'http_status_code' => 200,
+            'redirect_count' => 0,
+            'final_url' => $finalUrl,
+            'canonical_url' => $finalUrl,
+            'canonical_matches_final_url' => true,
+            'meta_robots' => null,
+            'viewport_found' => true,
+            'html_lang' => 'en',
+            'links_count' => 1,
+            'response_time_ms' => 100,
+            'page_size_bytes' => 1000,
+            'is_html_response' => true,
+            'compression_enabled' => true,
+            'cache_headers_present' => true,
+            'structured_data_found' => true,
+            'structured_data_errors_count' => 0,
+        ];
     }
 }

@@ -18,6 +18,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -170,6 +171,8 @@ class AuditApiTest extends TestCase
             ->assertJsonPath('audit.links_score', 100)
             ->assertJsonPath('audit.performance_score', 100)
             ->assertJsonPath('audit.status', Audit::STATUS_COMPLETED)
+            ->assertJsonPath('audit.requested_url', 'https://example.com/page')
+            ->assertJsonPath('audit.final_url', 'https://example.com/page')
             ->assertJsonMissingPath('audit.failure_reason')
             ->assertJsonPath('raw_data.title', 'Example Page')
             ->assertJsonPath('raw_data.meta_description', 'Example description')
@@ -188,6 +191,8 @@ class AuditApiTest extends TestCase
             'links_score' => 100,
             'performance_score' => 100,
             'status' => Audit::STATUS_COMPLETED,
+            'requested_url' => 'https://example.com/page',
+            'final_url' => 'https://example.com/page',
         ]);
         $audit = Audit::findOrFail($response->json('audit.id'));
         $this->assertSame('Example Page', $audit->raw_data['title']);
@@ -199,6 +204,7 @@ class AuditApiTest extends TestCase
     public function test_crawler_failures_return_a_safe_json_error(): void
     {
         Sanctum::actingAs(User::factory()->create());
+        Log::spy();
         $crawler = $this->mock(SeoCrawlerService::class);
         $crawler->shouldReceive('crawl')
             ->once()
@@ -218,6 +224,9 @@ class AuditApiTest extends TestCase
 
         $this->assertStringNotContainsString('Sensitive transport details', $response->getContent());
         $this->assertDatabaseCount('audits', 0);
+        Log::shouldHaveReceived('warning')->once()->with('Synchronous SEO audit crawl failed.', [
+            'exception' => Exception::class,
+        ]);
     }
 
     public function test_crawler_fails_safely_without_falling_back_when_dns_pinning_is_unavailable(): void
@@ -1952,6 +1961,8 @@ class AuditApiTest extends TestCase
 
         $response
             ->assertCreated()
+            ->assertJsonPath('audit.requested_url', 'https://example.com/start')
+            ->assertJsonPath('audit.final_url', 'https://example.com/page')
             ->assertJsonPath('raw_data.final_url', 'https://example.com/page')
             ->assertJsonPath('raw_data.redirect_count', 2)
             ->assertJsonPath('raw_data.canonical_matches_final_url', true)
@@ -2110,11 +2121,27 @@ class AuditApiTest extends TestCase
         $user = User::factory()->create();
         Sanctum::actingAs($user);
 
-        $this->postJson('/api/audits', ['url' => 'https://example.com/first'])->assertCreated();
-        $this->postJson('/api/audits', ['url' => 'https://example.com/second'])->assertCreated();
+        $firstResponse = $this->postJson('/api/audits', ['url' => 'https://example.com/first'])
+            ->assertCreated()
+            ->assertJsonPath('audit.requested_url', 'https://example.com/first');
+        $secondResponse = $this->postJson('/api/audits', ['url' => 'https://example.com/second'])
+            ->assertCreated()
+            ->assertJsonPath('audit.requested_url', 'https://example.com/second');
 
         $this->assertDatabaseCount('domains', 1);
         $this->assertDatabaseCount('audits', 2);
+        $this->assertSame(
+            $firstResponse->json('audit.domain_id'),
+            $secondResponse->json('audit.domain_id'),
+        );
+        $this->assertDatabaseHas('audits', [
+            'id' => $firstResponse->json('audit.id'),
+            'requested_url' => 'https://example.com/first',
+        ]);
+        $this->assertDatabaseHas('audits', [
+            'id' => $secondResponse->json('audit.id'),
+            'requested_url' => 'https://example.com/second',
+        ]);
     }
 
     public function test_an_authenticated_user_can_list_only_their_audits(): void

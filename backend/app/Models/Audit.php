@@ -29,6 +29,8 @@ class Audit extends Model
         'links_score',
         'performance_score',
         'raw_data',
+        'requested_url',
+        'final_url',
         'status',
         'started_at',
         'completed_at',

@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\Audit;
+use App\Services\Audit\AuditProcessingService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -12,7 +13,7 @@ class RunSeoAuditJob implements ShouldQueue
 {
     use Queueable;
 
-    public const GENERIC_FAILURE_REASON = 'Audit processing failed.';
+    public const GENERIC_FAILURE_REASON = AuditProcessingService::GENERIC_FAILURE_REASON;
 
     public int $tries = 2;
 
@@ -22,27 +23,11 @@ class RunSeoAuditJob implements ShouldQueue
         public int $auditId
     ) {}
 
-    public function handle(): void
+    public function handle(AuditProcessingService $processingService): void
     {
         $audit = Audit::findOrFail($this->auditId);
 
-        $audit->update([
-            'status' => Audit::STATUS_RUNNING,
-            'started_at' => now(),
-            'completed_at' => null,
-            'failed_at' => null,
-            'failure_reason' => null,
-        ]);
-
-        // Next step:
-        // Move the existing SEO crawl/scoring/issue generation logic here.
-
-        $audit->update([
-            'status' => Audit::STATUS_COMPLETED,
-            'completed_at' => now(),
-            'failed_at' => null,
-            'failure_reason' => null,
-        ]);
+        $processingService->process($audit);
     }
 
     public function failed(Throwable $exception): void
