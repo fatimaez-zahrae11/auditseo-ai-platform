@@ -833,6 +833,8 @@ Requests a new recommendation for an existing owned, completed audit and stores 
 
 The frontend must poll `GET /audits/{id}` until the audit status is `completed` before enabling recommendation generation. Audits that are still `pending` or `running`, or that ended as `failed`, are not sent to the AI provider.
 
+The provider receives a minimized, bounded SEO summary rather than the complete crawl `raw_data`. The summary is limited to audit scores, selected numeric/boolean SEO signals, high-level issue category/title/severity values, and a small number of sanitized URL samples. Full HTML, visible page text, headers, cookies, response bodies, issue descriptions, issue recommendations, and arbitrary crawler/debug fields are excluded. Every included HTTP(S) URL has its query string and fragment removed before transmission, including audited, canonical, sitemap, broken-link, issue-title, and sampled page URLs.
+
 - **Method:** `POST`
 - **URL:** `/audits/{audit}/recommendations`
 - **Authentication:** Required
@@ -863,7 +865,7 @@ Successful response — `201 Created`:
 }
 ```
 
-Display `recommendation.generated_text` as the generated recommendation content.
+`recommendation.generated_text` is stored and returned as an ordinary string. Treat it as untrusted provider-generated content. If the frontend renders it as Markdown or HTML, it must use an appropriate sanitizer and must not inject the value directly into the DOM as trusted HTML.
 
 Common errors:
 
@@ -927,7 +929,7 @@ Successful response — `200 OK`:
 }
 ```
 
-The frontend must consume both the `recommendations` array and the `pagination` object rather than expecting the endpoint to return the complete history in one array. Use the pagination URLs or the `page` query parameter to request more results. When no recommendation has been generated, `recommendations` is an empty array, `total` is `0`, and `from` and `to` are `null`. Render each item's `generated_text`; do not regenerate merely to display prior results.
+The frontend must consume both the `recommendations` array and the `pagination` object rather than expecting the endpoint to return the complete history in one array. Use the pagination URLs or the `page` query parameter to request more results. When no recommendation has been generated, `recommendations` is an empty array, `total` is `0`, and `from` and `to` are `null`. Treat every stored `generated_text` value as untrusted provider output and sanitize any Markdown/HTML rendering; do not regenerate merely to display prior results.
 
 Common errors:
 

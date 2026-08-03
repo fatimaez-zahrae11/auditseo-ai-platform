@@ -263,6 +263,30 @@ class AiRecommendationApiTest extends TestCase
         $this->assertNotEmpty($response->json('recommendation.prompt_summary'));
     }
 
+    public function test_generated_text_is_stored_and_returned_as_an_untrusted_plain_string(): void
+    {
+        $generatedText = '<script>alert("untrusted")</script> **Review this recommendation.**';
+        $this->aiResponse = [
+            'choices' => [
+                ['message' => ['content' => $generatedText]],
+            ],
+        ];
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+
+        $response = $this->postJson("/api/audits/{$audit->id}/recommendations");
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('recommendation.generated_text', $generatedText);
+        $this->assertIsString($response->json('recommendation.generated_text'));
+        $this->assertDatabaseHas('ai_recommendations', [
+            'audit_id' => $audit->id,
+            'generated_text' => $generatedText,
+        ]);
+    }
+
     public function test_pending_audit_cannot_generate_a_recommendation_or_call_the_provider(): void
     {
         $user = User::factory()->create();
@@ -450,7 +474,7 @@ class AiRecommendationApiTest extends TestCase
         $this->assertStringNotContainsString($rawProviderResponse, $serializedLog);
     }
 
-    public function test_ai_request_uses_the_configured_endpoint_model_and_audit_data(): void
+    public function test_ai_request_uses_the_configured_endpoint_model_and_minimized_audit_data(): void
     {
         $user = User::factory()->create();
         $audit = $this->createAuditFor($user);
@@ -467,17 +491,147 @@ class AiRecommendationApiTest extends TestCase
                 && $request['max_tokens'] === 512
                 && $request->hasHeader('Authorization', 'Bearer '.self::AI_KEY)
                 && str_contains($userPrompt, '"scores"')
-                && str_contains($userPrompt, '"raw_data"')
-                && str_contains($userPrompt, '"issues"');
+                && str_contains($userPrompt, '"seo_signals"')
+                && str_contains($userPrompt, '"title_present": false')
+                && str_contains($userPrompt, '"h1_count": 1')
+                && str_contains($userPrompt, '"issues"')
+                && ! str_contains($userPrompt, '"raw_data"');
         });
+    }
+
+    public function test_ai_prompt_allowlists_signals_and_sanitizes_all_included_urls(): void
+    {
+        $sensitiveUrl = 'https://example.com/page?token=secret123&signature=abc#private';
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user, [
+            'requested_url' => 'https://example.com/requested-private?token=secret123#private',
+            'final_url' => $sensitiveUrl,
+            'raw_data' => [
+                'title' => 'Attacker-controlled title marker',
+                'title_length' => 32,
+                'meta_description' => 'Attacker-controlled description marker',
+                'meta_description_length' => 120,
+                'word_count' => 450,
+                'h1_count' => 1,
+                'title_matches_h1' => true,
+                'images_count' => 10,
+                'images_missing_alt_count' => 2,
+                'images_alt_missing_ratio' => 0.2,
+                'internal_links_count' => 14,
+                'external_links_count' => 3,
+                'broken_links_count' => 1,
+                'broken_links_sample' => [
+                    'https://example.com/broken?token=secret123&signature=abc#private',
+                ],
+                'http_status_code' => 200,
+                'uses_https' => true,
+                'is_indexable' => true,
+                'canonical_url' => 'https://example.com/canonical?token=secret123#private',
+                'canonical_matches_final_url' => false,
+                'robots_txt_found' => true,
+                'robots_txt_allows_audited_url' => true,
+                'sitemap_xml_found' => true,
+                'sitemap_xml_is_valid' => true,
+                'sitemap_contains_audited_url' => true,
+                'sitemap_urls_sample' => [
+                    'https://example.com/sitemap-page?signature=abc#private',
+                ],
+                'structured_data_found' => false,
+                'structured_data_errors_count' => 0,
+                'response_time_ms' => 325,
+                'page_size_bytes' => 42_000,
+                'compression_enabled' => true,
+                'cache_headers_present' => false,
+                'is_html_response' => true,
+                'crawled_pages_count' => 1,
+                'crawled_pages' => [[
+                    'url' => 'https://example.com/crawled?token=secret123#private',
+                    'status_code' => 200,
+                    'word_count' => 300,
+                    'is_indexable' => true,
+                    'response_time_ms' => 250,
+                    'structured_data_found' => false,
+                    'canonical_url' => 'https://example.com/crawled-canonical?signature=abc#private',
+                    'title' => 'Arbitrary crawled page title marker',
+                    'meta_description' => 'Arbitrary crawled page content marker',
+                ]],
+                'raw_html' => '<html>Arbitrary raw HTML marker</html>',
+                'visible_text_sample' => 'Arbitrary raw page content marker token=secret123',
+                'request_headers' => ['Authorization' => 'Bearer secret123'],
+                'response_headers' => ['Set-Cookie' => 'auth=secret123'],
+                'cookies' => ['session' => 'secret123'],
+                'crawler_debug' => 'signature=abc',
+            ],
+        ]);
+        $audit->issues()->firstOrFail()->update([
+            'title' => 'Broken issue URL https://example.com/issue?token=secret123&signature=abc#private secret=issueSecret email=user@example.com',
+            'description' => 'Arbitrary issue description marker.',
+            'recommendation' => 'Arbitrary issue recommendation marker.',
+        ]);
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/audits/{$audit->id}/recommendations")->assertCreated();
+
+        $prompt = null;
+        Http::assertSent(function (Request $request) use (&$prompt): bool {
+            if ($request->url() !== self::AI_URL) {
+                return false;
+            }
+
+            $prompt = (string) ($request->data()['messages'][1]['content'] ?? '');
+
+            return true;
+        });
+
+        $this->assertIsString($prompt);
+        $this->assertStringContainsString('"url": "https://example.com/page"', $prompt);
+        $this->assertStringContainsString('"title_length": 32', $prompt);
+        $this->assertStringContainsString('"meta_description_length": 120', $prompt);
+        $this->assertStringContainsString('"images"', $prompt);
+        $this->assertStringContainsString('"internal": 14', $prompt);
+        $this->assertStringContainsString('"robots_txt_found": true', $prompt);
+        $this->assertStringContainsString('"structured_data"', $prompt);
+        $this->assertStringContainsString('"response_time_ms": 325', $prompt);
+        $this->assertStringContainsString('https://example.com/canonical', $prompt);
+        $this->assertStringContainsString('https://example.com/broken', $prompt);
+        $this->assertStringContainsString('https://example.com/sitemap-page', $prompt);
+        $this->assertStringContainsString('https://example.com/crawled', $prompt);
+        $this->assertStringContainsString('https://example.com/crawled-canonical', $prompt);
+        $this->assertStringContainsString('Broken issue URL https://example.com/issue', $prompt);
+        $this->assertStringContainsString('secret=[REDACTED]', $prompt);
+        $this->assertStringContainsString('email=[REDACTED]', $prompt);
+
+        foreach ([
+            'secret123',
+            'signature=abc',
+            'token=secret123',
+            'issueSecret',
+            'user@example.com',
+            'requested-private',
+            '"raw_data"',
+            'raw_html',
+            'visible_text_sample',
+            'request_headers',
+            'response_headers',
+            'cookies',
+            'crawler_debug',
+            'Arbitrary raw HTML marker',
+            'Arbitrary raw page content marker',
+            'Arbitrary crawled page title marker',
+            'Arbitrary crawled page content marker',
+            'Arbitrary issue description marker',
+            'Arbitrary issue recommendation marker',
+        ] as $excludedValue) {
+            $this->assertStringNotContainsString($excludedValue, $prompt);
+        }
     }
 
     public function test_ai_prompt_uses_the_audit_final_url_when_available(): void
     {
         $user = User::factory()->create();
         $audit = $this->createAuditFor($user, [
-            'requested_url' => 'https://example.com/requested-path',
-            'final_url' => 'https://example.com/final-path',
+            'requested_url' => 'https://example.com/requested-path?token=secret123#private',
+            'final_url' => 'https://example.com/final-path?token=secret123&signature=abc#private',
         ]);
         Sanctum::actingAs($user);
 
@@ -487,7 +641,10 @@ class AiRecommendationApiTest extends TestCase
             $userPrompt = $request->data()['messages'][1]['content'] ?? '';
 
             return str_contains($userPrompt, '"url": "https://example.com/final-path"')
-                && ! str_contains($userPrompt, '"url": "https://example.com/requested-path"');
+                && ! str_contains($userPrompt, 'requested-path')
+                && ! str_contains($userPrompt, 'secret123')
+                && ! str_contains($userPrompt, 'signature=abc')
+                && ! str_contains($userPrompt, 'token=secret123');
         });
     }
 
@@ -495,7 +652,7 @@ class AiRecommendationApiTest extends TestCase
     {
         $user = User::factory()->create();
         $audit = $this->createAuditFor($user, [
-            'requested_url' => 'https://example.com/requested-only-path',
+            'requested_url' => 'https://example.com/requested-only-path?token=secret123&signature=abc#private',
             'final_url' => null,
         ]);
         Sanctum::actingAs($user);
@@ -506,7 +663,9 @@ class AiRecommendationApiTest extends TestCase
             $userPrompt = $request->data()['messages'][1]['content'] ?? '';
 
             return str_contains($userPrompt, '"url": "https://example.com/requested-only-path"')
-                && ! str_contains($userPrompt, '"url": "https://example.com"');
+                && ! str_contains($userPrompt, 'secret123')
+                && ! str_contains($userPrompt, 'signature=abc')
+                && ! str_contains($userPrompt, 'token=secret123');
         });
     }
 
