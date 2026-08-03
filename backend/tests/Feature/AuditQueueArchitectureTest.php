@@ -119,6 +119,16 @@ class AuditQueueArchitectureTest extends TestCase
         $this->assertSame(Audit::STATUS_PENDING, $this->createAudit()->status);
     }
 
+    public function test_redis_retry_after_is_safely_above_the_audit_job_timeout(): void
+    {
+        $job = new RunSeoAuditJob(1);
+        $retryAfter = (int) config('queue.connections.redis.retry_after');
+
+        $this->assertSame(180, $job->timeout);
+        $this->assertGreaterThan($job->timeout, $retryAfter);
+        $this->assertSame(30, $job->backoff);
+    }
+
     public function test_run_seo_audit_job_records_running_and_completed_transitions(): void
     {
         $requestedUrl = 'https://example.com/queued-path?view=full';
@@ -160,35 +170,129 @@ class AuditQueueArchitectureTest extends TestCase
         $this->assertEquals($rawData, $audit->raw_data);
     }
 
-    public function test_run_seo_audit_job_uses_requested_url_and_fails_generically_on_processing_exception(): void
+    public function test_first_attempt_failure_stays_running_until_the_terminal_failure_callback(): void
     {
         $requestedUrl = 'https://example.com/exact-path?token=stored-value';
+        $user = User::factory()->create();
         $audit = $this->createAudit([
             'requested_url' => $requestedUrl,
-        ]);
+        ], $user);
         $crawler = $this->mock(SeoCrawlerService::class);
         $crawler->shouldReceive('crawl')
             ->once()
             ->with($requestedUrl)
             ->andThrow(new RuntimeException('Sensitive provider response with secret details.'));
         $processingService = new AuditProcessingService($crawler, new SeoScoringService);
+        $job = new RunSeoAuditJob($audit->id);
+        $exception = null;
 
         try {
-            (new RunSeoAuditJob($audit->id))->handle($processingService);
+            $job->handle($processingService);
             $this->fail('The processing exception was not rethrown.');
-        } catch (RuntimeException $exception) {
-            $this->assertSame('Sensitive provider response with secret details.', $exception->getMessage());
+        } catch (RuntimeException $caughtException) {
+            $exception = $caughtException;
+            $this->assertSame('Sensitive provider response with secret details.', $caughtException->getMessage());
         }
 
         $audit->refresh();
 
-        $this->assertSame(Audit::STATUS_FAILED, $audit->status);
+        $this->assertSame(Audit::STATUS_RUNNING, $audit->status);
         $this->assertNotNull($audit->started_at);
+        $this->assertNull($audit->failed_at);
+        $this->assertNull($audit->completed_at);
+        $this->assertNull($audit->failure_reason);
+        $this->assertArrayNotHasKey('failure_reason', $audit->toArray());
+
+        Sanctum::actingAs($user);
+        $this->getJson("/api/audits/{$audit->id}")
+            ->assertOk()
+            ->assertJsonPath('audit.status', Audit::STATUS_RUNNING)
+            ->assertJsonMissingPath('audit.failure_reason')
+            ->assertDontSee('Sensitive provider response');
+
+        $this->assertInstanceOf(RuntimeException::class, $exception);
+        $job->failed($exception);
+        $audit->refresh();
+
+        $this->assertSame(Audit::STATUS_FAILED, $audit->status);
         $this->assertNotNull($audit->failed_at);
         $this->assertNull($audit->completed_at);
         $this->assertSame(AuditProcessingService::GENERIC_FAILURE_REASON, $audit->failure_reason);
         $this->assertStringNotContainsString('Sensitive', $audit->failure_reason);
-        $this->assertArrayNotHasKey('failure_reason', $audit->toArray());
+    }
+
+    public function test_a_failed_first_attempt_can_retry_successfully_without_resetting_started_at(): void
+    {
+        $requestedUrl = 'https://example.com/retry-path';
+        $finalUrl = 'https://example.com/retry-success';
+        $audit = $this->createAudit(['requested_url' => $requestedUrl]);
+        $rawData = $this->completeRawData($finalUrl);
+        $attempt = 0;
+        $crawler = $this->mock(SeoCrawlerService::class);
+        $crawler->shouldReceive('crawl')
+            ->twice()
+            ->with($requestedUrl)
+            ->andReturnUsing(function () use (&$attempt, $rawData): array {
+                $attempt++;
+
+                if ($attempt === 1) {
+                    throw new RuntimeException('Sensitive transient failure.');
+                }
+
+                return $rawData;
+            });
+        $processingService = new AuditProcessingService($crawler, new SeoScoringService);
+        $job = new RunSeoAuditJob($audit->id);
+
+        try {
+            $job->handle($processingService);
+            $this->fail('The first attempt did not fail.');
+        } catch (RuntimeException) {
+            // Laravel will release the job for its remaining attempt.
+        }
+
+        $audit->refresh();
+        $firstStartedAt = $audit->started_at?->copy();
+        $this->assertSame(Audit::STATUS_RUNNING, $audit->status);
+        $this->assertNotNull($firstStartedAt);
+        $this->assertNull($audit->failed_at);
+        $this->assertNull($audit->failure_reason);
+
+        $job->handle($processingService);
+        $audit->refresh();
+
+        $this->assertSame(Audit::STATUS_COMPLETED, $audit->status);
+        $this->assertTrue($firstStartedAt->equalTo($audit->started_at));
+        $this->assertNotNull($audit->completed_at);
+        $this->assertNull($audit->failed_at);
+        $this->assertNull($audit->failure_reason);
+        $this->assertSame($finalUrl, $audit->final_url);
+    }
+
+    public function test_completed_audits_are_not_overwritten_by_duplicate_processing_or_failure_callbacks(): void
+    {
+        $completedAt = now()->subMinute();
+        $audit = $this->createAudit([
+            'status' => Audit::STATUS_COMPLETED,
+            'started_at' => now()->subMinutes(2),
+            'completed_at' => $completedAt,
+            'final_url' => 'https://example.com/already-completed',
+        ]);
+        $persistedCompletedAt = $audit->fresh()->completed_at;
+        $crawler = $this->mock(SeoCrawlerService::class);
+        $crawler->shouldNotReceive('crawl');
+        $processingService = new AuditProcessingService($crawler, new SeoScoringService);
+        $job = new RunSeoAuditJob($audit->id);
+
+        $job->handle($processingService);
+        $job->failed(new RuntimeException('Late worker failure with sensitive details.'));
+        $audit->refresh();
+
+        $this->assertSame(Audit::STATUS_COMPLETED, $audit->status);
+        $this->assertTrue($persistedCompletedAt->equalTo($audit->completed_at));
+        $this->assertNull($audit->failed_at);
+        $this->assertNull($audit->failure_reason);
+        $this->assertSame('https://example.com/already-completed', $audit->final_url);
     }
 
     public function test_run_seo_audit_job_failure_callback_stores_only_a_generic_reason(): void

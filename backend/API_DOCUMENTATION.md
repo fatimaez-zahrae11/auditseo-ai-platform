@@ -435,7 +435,7 @@ Audit statuses:
 - `pending`: stored and waiting for a worker.
 - `running`: the worker has started crawling and scoring.
 - `completed`: scores, `raw_data`, issues, and `final_url` are available.
-- `failed`: processing ended unsuccessfully. Internal failure details are not exposed in API responses.
+- `failed`: processing ended unsuccessfully after all automatic job attempts were exhausted. Internal failure details are not exposed in API responses.
 
 `requested_url` is the exact validated URL submitted for that audit. `final_url` is the final page URL reached after safe redirect handling and remains `null` until available. These audit-specific values are independent from the domain's host-level identity.
 
@@ -451,7 +451,10 @@ Production should use the Redis queue connection:
 
 ```dotenv
 QUEUE_CONNECTION=redis
+REDIS_QUEUE_RETRY_AFTER=300
 ```
+
+The Redis `retry_after` value must remain comfortably higher than the audit job timeout. The audit job currently has a 180-second timeout, so the documented 300-second reservation prevents another worker from receiving the same audit while the first worker is still allowed to run.
 
 At least one queue worker must be running for pending audits to progress:
 

@@ -19,6 +19,8 @@ class RunSeoAuditJob implements ShouldQueue
 
     public int $timeout = 180;
 
+    public int $backoff = 30;
+
     public function __construct(
         public int $auditId
     ) {}
@@ -32,16 +34,15 @@ class RunSeoAuditJob implements ShouldQueue
 
     public function failed(Throwable $exception): void
     {
-        $audit = Audit::find($this->auditId);
-
-        if ($audit) {
-            $audit->update([
+        Audit::query()
+            ->whereKey($this->auditId)
+            ->where('status', '!=', Audit::STATUS_COMPLETED)
+            ->update([
                 'status' => Audit::STATUS_FAILED,
                 'completed_at' => null,
                 'failed_at' => now(),
                 'failure_reason' => self::GENERIC_FAILURE_REASON,
             ]);
-        }
 
         Log::warning('SEO audit job failed.', [
             'audit_id' => $this->auditId,

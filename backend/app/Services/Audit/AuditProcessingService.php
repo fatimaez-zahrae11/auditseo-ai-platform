@@ -9,7 +9,6 @@ use App\Services\Seo\SeoScoringService;
 use DateTimeInterface;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
-use Throwable;
 
 class AuditProcessingService
 {
@@ -58,54 +57,45 @@ class AuditProcessingService
 
     public function process(Audit $audit): Audit
     {
-        try {
+        $audit->refresh();
+
+        if ($audit->status === Audit::STATUS_COMPLETED) {
+            return $audit;
+        }
+
+        $audit->update([
+            'status' => Audit::STATUS_RUNNING,
+            'started_at' => $audit->started_at ?? now(),
+            'completed_at' => null,
+            'failed_at' => null,
+            'failure_reason' => null,
+        ]);
+
+        $requestedUrl = $audit->requested_url;
+        if (! is_string($requestedUrl) || trim($requestedUrl) === '') {
+            throw new RuntimeException('The audit does not have a requested URL.');
+        }
+
+        $rawData = $this->crawl($requestedUrl);
+        $scores = $this->scoring->calculate($rawData);
+
+        DB::transaction(function () use ($audit, $rawData, $scores): void {
+            $audit->issues()->delete();
+
             $audit->update([
-                'status' => Audit::STATUS_RUNNING,
-                'started_at' => now(),
-                'completed_at' => null,
+                ...$scores,
+                'raw_data' => $rawData,
+                'final_url' => $this->finalUrl($rawData),
+                'status' => Audit::STATUS_COMPLETED,
+                'completed_at' => now(),
                 'failed_at' => null,
                 'failure_reason' => null,
             ]);
 
-            $requestedUrl = $audit->requested_url;
-            if (! is_string($requestedUrl) || trim($requestedUrl) === '') {
-                throw new RuntimeException('The audit does not have a requested URL.');
-            }
+            $this->createIssues($audit, $rawData);
+        });
 
-            $rawData = $this->crawl($requestedUrl);
-            $scores = $this->scoring->calculate($rawData);
-
-            DB::transaction(function () use ($audit, $rawData, $scores): void {
-                $audit->issues()->delete();
-
-                $audit->update([
-                    ...$scores,
-                    'raw_data' => $rawData,
-                    'final_url' => $this->finalUrl($rawData),
-                    'status' => Audit::STATUS_COMPLETED,
-                    'completed_at' => now(),
-                    'failed_at' => null,
-                    'failure_reason' => null,
-                ]);
-
-                $this->createIssues($audit, $rawData);
-            });
-
-            return $audit->refresh();
-        } catch (Throwable $exception) {
-            try {
-                $audit->update([
-                    'status' => Audit::STATUS_FAILED,
-                    'completed_at' => null,
-                    'failed_at' => now(),
-                    'failure_reason' => self::GENERIC_FAILURE_REASON,
-                ]);
-            } catch (Throwable) {
-                // The queue failure callback will retry this update after terminal failure.
-            }
-
-            throw $exception;
-        }
+        return $audit->refresh();
     }
 
     /**
