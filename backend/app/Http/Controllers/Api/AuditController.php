@@ -4,23 +4,16 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreAuditRequest;
+use App\Jobs\RunSeoAuditJob;
 use App\Models\Audit;
 use App\Models\Domain;
-use App\Services\Audit\AuditProcessingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Validation\ValidationException;
-use Throwable;
 
 class AuditController extends Controller
 {
-    private const AUDIT_EXECUTION_TIME_LIMIT_SECONDS = 180;
-
-    public function store(
-        StoreAuditRequest $request,
-        AuditProcessingService $processingService,
-    ): JsonResponse {
+    public function store(StoreAuditRequest $request): JsonResponse
+    {
         $url = $request->validated('url');
         $domainName = strtolower((string) parse_url($url, PHP_URL_HOST));
 
@@ -32,49 +25,28 @@ class AuditController extends Controller
             ['url' => $url],
         );
 
-        $this->extendExecutionTimeForAudit();
-        $startedAt = now();
+        $audit = $domain->audits()->create([
+            'global_score' => 0,
+            'technical_score' => 0,
+            'content_score' => 0,
+            'links_score' => 0,
+            'performance_score' => 0,
+            'raw_data' => null,
+            'requested_url' => $url,
+            'status' => Audit::STATUS_PENDING,
+        ]);
 
-        try {
-            $rawData = $processingService->crawl($url);
-        } catch (ValidationException $exception) {
-            throw $exception;
-        } catch (Throwable $exception) {
-            Log::warning('Synchronous SEO audit crawl failed.', [
-                'exception' => $exception::class,
-            ]);
-
-            return response()->json([
-                'message' => 'Unable to fetch the requested URL.',
-            ], 502);
-        }
-
-        $audit = $processingService->createCompletedAudit(
-            $domain,
-            $url,
-            $rawData,
-            $startedAt,
-        );
-        $audit->load(['domain', 'issues']);
+        RunSeoAuditJob::dispatch($audit->id);
 
         return response()->json([
-            'message' => 'Audit created successfully.',
-            'audit' => $audit,
-            'domain' => $audit->domain,
-            'issues' => $audit->issues,
-            'raw_data' => $audit->raw_data,
-        ], 201);
-    }
-
-    private function extendExecutionTimeForAudit(): void
-    {
-        if (function_exists('set_time_limit')) {
-            @set_time_limit(self::AUDIT_EXECUTION_TIME_LIMIT_SECONDS);
-        }
-
-        if (function_exists('ini_set')) {
-            @ini_set('max_execution_time', (string) self::AUDIT_EXECUTION_TIME_LIMIT_SECONDS);
-        }
+            'message' => 'Audit queued for processing.',
+            'audit' => [
+                'id' => $audit->id,
+                'status' => $audit->status,
+                'requested_url' => $audit->requested_url,
+            ],
+            'poll_url' => "/api/audits/{$audit->id}",
+        ], 202);
     }
 
     // index() & show() ces 2 fcts gardent la protection IDOR:

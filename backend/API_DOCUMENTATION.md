@@ -393,7 +393,7 @@ All audit endpoints only expose audits owned by the authenticated user. Audit ow
 
 Crawls a public HTTP or HTTPS URL, calculates SEO scores, creates detected issues, and stores the audit.
 
-Queue processing is prepared but not enabled for this endpoint yet. `POST /audits` still performs the audit synchronously and returns `201 Created`; it does not return `202 Accepted`. The queued job now uses the shared audit-processing service, but async dispatch and production worker configuration are still pending.
+Audit creation is asynchronous. The endpoint validates and stores the request as a pending audit, dispatches the SEO audit job, and returns immediately. Crawling, scoring, issue generation, and final URL resolution run in the queue worker.
 
 - **Method:** `POST`
 - **URL:** `/audits`
@@ -407,116 +407,59 @@ Request body:
 }
 ```
 
-The URL must be valid, begin with `http://` or `https://`, and must not target an unsafe/private address.
+The URL must be valid, begin with `http://` or `https://`, and must not target an unsafe/private address. The crawler re-applies the public URL and DNS-pinning protections while processing redirects.
 
-The response includes professional SEO analysis in both `audit.raw_data` and the top-level `raw_data` field. Detected audit issues are returned in both `audit.issues` and the top-level `issues` array.
-
-Successful response — `201 Created`:
+Successful response — `202 Accepted`:
 
 ```json
 {
-  "message": "Audit created successfully.",
+  "message": "Audit queued for processing.",
   "audit": {
     "id": 12,
-    "domain_id": 4,
-    "global_score": 86,
-    "technical_score": 100,
-    "content_score": 75,
-    "links_score": 70,
-    "performance_score": 100,
-    "requested_url": "https://example.com/page",
-    "final_url": "https://www.example.com/page",
-    "status": "completed",
-    "started_at": "2026-07-19T10:14:55.000000Z",
-    "completed_at": "2026-07-19T10:15:00.000000Z",
-    "failed_at": null,
-    "raw_data": {
-      "title": null,
-      "meta_description": "Example description",
-      "h1_count": 1,
-      "h2_count": 2,
-      "images_count": 3,
-      "images_missing_alt_count": 1,
-      "links_count": 5,
-      "uses_https": true,
-      "robots_txt_found": true,
-      "sitemap_xml_found": true
-    },
-    "created_at": "2026-07-19T10:15:00.000000Z",
-    "updated_at": "2026-07-19T10:15:00.000000Z",
-    "domain": {
-      "id": 4,
-      "user_id": 1,
-      "domain_name": "example.com",
-      "url": "https://example.com/page",
-      "created_at": "2026-07-19T10:15:00.000000Z",
-      "updated_at": "2026-07-19T10:15:00.000000Z"
-    },
-    "issues": [
-      {
-        "id": 30,
-        "audit_id": 12,
-        "category": "content",
-        "title": "Missing page title",
-        "severity": "important",
-        "description": null,
-        "recommendation": "Add a descriptive title element.",
-        "created_at": "2026-07-19T10:15:00.000000Z",
-        "updated_at": "2026-07-19T10:15:00.000000Z"
-      }
-    ]
+    "status": "pending",
+    "requested_url": "https://example.com/page"
   },
-  "domain": {
-    "id": 4,
-    "user_id": 1,
-    "domain_name": "example.com",
-    "url": "https://example.com/page",
-    "created_at": "2026-07-19T10:15:00.000000Z",
-    "updated_at": "2026-07-19T10:15:00.000000Z"
-  },
-  "issues": [
-    {
-      "id": 30,
-      "audit_id": 12,
-      "category": "content",
-      "title": "Missing page title",
-      "severity": "important",
-      "description": null,
-      "recommendation": "Add a descriptive title element.",
-      "created_at": "2026-07-19T10:15:00.000000Z",
-      "updated_at": "2026-07-19T10:15:00.000000Z"
-    }
-  ],
-  "raw_data": {
-    "title": null,
-    "meta_description": "Example description",
-    "h1_count": 1,
-    "h2_count": 2,
-    "images_count": 3,
-    "images_missing_alt_count": 1,
-    "links_count": 5,
-    "uses_https": true,
-    "robots_txt_found": true,
-    "sitemap_xml_found": true
-  }
+  "poll_url": "/api/audits/12"
 }
 ```
 
-`requested_url` is the exact validated URL submitted for that audit. `final_url` is the final page URL reached by the crawler after safe redirect handling and may be `null` until processing completes. These audit-specific values are independent from the domain's host-level identity.
+The POST response does not include scores, issues, or crawl data because processing has not completed. Poll the owned audit endpoint until it reaches a terminal status:
 
-Audit status can be `pending`, `running`, `completed`, or `failed`. Internal failure details are not included in API responses.
+```http
+GET /api/audits/12
+Authorization: Bearer <token>
+```
+
+Audit statuses:
+
+- `pending`: stored and waiting for a worker.
+- `running`: the worker has started crawling and scoring.
+- `completed`: scores, `raw_data`, issues, and `final_url` are available.
+- `failed`: processing ended unsuccessfully. Internal failure details are not exposed in API responses.
+
+`requested_url` is the exact validated URL submitted for that audit. `final_url` is the final page URL reached after safe redirect handling and remains `null` until available. These audit-specific values are independent from the domain's host-level identity.
 
 Common errors:
 
 - `401 Unauthorized` when authentication is missing or invalid.
 - `422 Validation Error` when `url` is missing, invalid, does not use HTTP(S), or targets an unsafe address.
-- `502 Bad Gateway` when Laravel cannot fetch the requested URL:
+- `429 Too Many Requests` when the audit creation rate limit is exceeded.
 
-```json
-{
-  "message": "Unable to fetch the requested URL."
-}
+### Queue worker
+
+Production should use the Redis queue connection:
+
+```dotenv
+QUEUE_CONNECTION=redis
 ```
+
+At least one queue worker must be running for pending audits to progress:
+
+```bash
+php artisan queue:work
+```
+
+This documents the required worker command only; it does not imply that Supervisor, systemd, or another process manager is already configured.
 
 ### List audits
 
@@ -1039,7 +982,7 @@ Common error:
 - Set `MAIL_FROM_ADDRESS` to an address on that verified domain and set `MAIL_FROM_NAME` to the desired sender name.
 - Production verification emails must contain HTTPS production URLs. A link generated for `localhost` or `127.0.0.1` will not provide a usable production verification flow.
 - Keep the complete signed verification URL unchanged when routing the user through the frontend or backend; modifying its signed parameters invalidates it.
-- Use Redis through the installed Predis client for shared application cache and rate-limit counters in production (`CACHE_STORE=redis`, `CACHE_LIMITER=redis`, and `REDIS_CLIENT=predis`). Ensure every application instance connects to the same protected Redis service.
+- Use Redis through the installed Predis client for queues, shared application cache, and rate-limit counters in production (`QUEUE_CONNECTION=redis`, `CACHE_STORE=redis`, `CACHE_LIMITER=redis`, and `REDIS_CLIENT=predis`). Ensure every application instance and queue worker connects to the same protected Redis service.
 - Keep `SANCTUM_EXPIRATION=1440` (1,440 minutes / 24 hours) or configure a shorter production lifetime. Sanctum rejects expired tokens automatically with `401 Unauthorized`.
 - Schedule `php artisan sanctum:prune-expired --hours=24` in production to remove token records that have been expired for at least 24 hours. This repository does not currently configure the production scheduler or cron entry; deployment must configure and monitor it. Pruning is database cleanup and is separate from Sanctum's automatic rejection of expired tokens.
 
@@ -1053,7 +996,11 @@ The request completed successfully. Used by login, current-user, logout, list/de
 
 ### `201 Created`
 
-A resource was created successfully. Used by registration, audit creation, and AI recommendation generation.
+A resource was created successfully. Used by registration and AI recommendation generation.
+
+### `202 Accepted`
+
+The audit request was validated, stored as `pending`, and dispatched for background processing. Poll the response's `poll_url` until the audit becomes `completed` or `failed`.
 
 ### `401 Unauthorized`
 
@@ -1109,7 +1056,7 @@ AI recommendation generation could not obtain a valid provider response:
 }
 ```
 
-Keep the current audit page usable, show a retry message, and avoid tight automatic retry loops. Audit creation can also return `502` with `Unable to fetch the requested URL.` when the target site cannot be reached.
+Keep the current audit page usable, show a retry message, and avoid tight automatic retry loops.
 
 ## Important frontend notes
 
@@ -1119,6 +1066,7 @@ Keep the current audit page usable, show a retry message, and avoid tight automa
 - After successful email verification, send the user through login again.
 - Store a Sanctum token only after successful login, and remove it after logout, logout-all, or an authentication failure.
 - Send `Authorization: Bearer <token>` on every protected API request.
+- After `POST /audits` returns `202`, poll its `poll_url` and show pending/running progress until the audit reaches `completed` or `failed`.
 - Display `global_score` prominently and show `technical_score`, `content_score`, `links_score`, and `performance_score` as category scores.
 - Group audit issues by `category` and optionally by `severity` for summary and detail views.
 - Use `raw_data` to build detailed tabs such as Technical SEO, Content, Links, Performance, Structured Data, Sitemap/Robots, and Crawl.

@@ -2,11 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\RunSeoAuditJob;
 use App\Models\Audit;
 use App\Models\Domain;
 use App\Models\User;
 use App\Security\CurlTransportCapabilities;
 use App\Security\DnsResolver;
+use App\Services\Audit\AuditProcessingService;
 use App\Services\Seo\SeoCrawlerService;
 use Exception;
 use GuzzleHttp\Promise\Create;
@@ -19,10 +21,14 @@ use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Testing\TestResponse;
+use Illuminate\Validation\ValidationException;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
+use Throwable;
 
 class AuditApiTest extends TestCase
 {
@@ -70,6 +76,8 @@ class AuditApiTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        Queue::fake();
 
         $this->responseHtml = $this->completeHtml();
         $this->robotsStatus = 200;
@@ -145,6 +153,54 @@ class AuditApiTest extends TestCase
         });
     }
 
+    /**
+     * Execute the queued job after the real HTTP request so crawler regression
+     * tests remain focused on the completed audit result.
+     */
+    public function postJson($uri, array $data = [], array $headers = [], $options = 0)
+    {
+        $response = parent::postJson($uri, $data, $headers, $options);
+
+        if ($uri !== '/api/audits' || $response->getStatusCode() !== 202) {
+            return $response;
+        }
+
+        $auditId = (int) $response->json('audit.id');
+        $job = new RunSeoAuditJob($auditId);
+
+        try {
+            $job->handle($this->app->make(AuditProcessingService::class));
+        } catch (ValidationException $exception) {
+            $job->failed($exception);
+
+            return TestResponse::fromBaseResponse(response()->json([
+                'message' => 'The given data was invalid.',
+                'errors' => $exception->errors(),
+            ], 422));
+        } catch (Throwable $exception) {
+            $job->failed($exception);
+
+            return TestResponse::fromBaseResponse(response()->json([
+                'message' => 'Unable to fetch the requested URL.',
+            ], 502));
+        }
+
+        $audit = Audit::with(['domain', 'issues'])->findOrFail($auditId);
+
+        return TestResponse::fromBaseResponse(response()->json([
+            'message' => 'Audit created successfully.',
+            'audit' => $audit,
+            'domain' => $audit->domain,
+            'issues' => $audit->issues,
+            'raw_data' => $audit->raw_data,
+        ], 201));
+    }
+
+    private function postQueuedAudit(array $data): TestResponse
+    {
+        return parent::postJson('/api/audits', $data);
+    }
+
     public function test_unauthenticated_users_cannot_access_audit_routes(): void
     {
         $this->postJson('/api/audits', ['url' => 'https://example.com'])->assertUnauthorized();
@@ -152,53 +208,56 @@ class AuditApiTest extends TestCase
         $this->getJson('/api/audits/1')->assertUnauthorized();
     }
 
-    public function test_an_authenticated_user_can_create_an_audit(): void
+    public function test_an_authenticated_user_can_queue_an_audit_without_running_the_crawler(): void
     {
         $user = User::factory()->create();
         Sanctum::actingAs($user);
+        $crawler = $this->mock(SeoCrawlerService::class);
+        $crawler->shouldNotReceive('crawl');
 
-        $response = $this->postJson('/api/audits', [
+        $response = $this->postQueuedAudit([
             'url' => 'https://example.com/page',
         ]);
 
         $response
-            ->assertCreated()
-            ->assertJsonPath('audit.domain.user_id', $user->id)
-            ->assertJsonPath('audit.domain.domain_name', 'example.com')
-            ->assertJsonPath('audit.global_score', 91)
-            ->assertJsonPath('audit.technical_score', 100)
-            ->assertJsonPath('audit.content_score', 65)
-            ->assertJsonPath('audit.links_score', 100)
-            ->assertJsonPath('audit.performance_score', 100)
-            ->assertJsonPath('audit.status', Audit::STATUS_COMPLETED)
+            ->assertAccepted()
+            ->assertJsonPath('message', 'Audit queued for processing.')
+            ->assertJsonCount(3, 'audit')
+            ->assertJsonPath('audit.status', Audit::STATUS_PENDING)
             ->assertJsonPath('audit.requested_url', 'https://example.com/page')
-            ->assertJsonPath('audit.final_url', 'https://example.com/page')
-            ->assertJsonMissingPath('audit.failure_reason')
-            ->assertJsonPath('raw_data.title', 'Example Page')
-            ->assertJsonPath('raw_data.meta_description', 'Example description')
-            ->assertJsonPath('raw_data.robots_txt_found', true)
-            ->assertJsonPath('raw_data.sitemap_xml_found', true);
+            ->assertJsonPath('poll_url', '/api/audits/'.$response->json('audit.id'));
 
         $this->assertDatabaseHas('domains', [
             'user_id' => $user->id,
             'domain_name' => 'example.com',
         ]);
         $this->assertDatabaseHas('audits', [
-            'domain_id' => $response->json('audit.domain_id'),
-            'global_score' => 91,
-            'technical_score' => 100,
-            'content_score' => 65,
-            'links_score' => 100,
-            'performance_score' => 100,
-            'status' => Audit::STATUS_COMPLETED,
+            'id' => $response->json('audit.id'),
+            'global_score' => 0,
+            'technical_score' => 0,
+            'content_score' => 0,
+            'links_score' => 0,
+            'performance_score' => 0,
+            'status' => Audit::STATUS_PENDING,
             'requested_url' => 'https://example.com/page',
-            'final_url' => 'https://example.com/page',
+            'raw_data' => null,
         ]);
         $audit = Audit::findOrFail($response->json('audit.id'));
-        $this->assertSame('Example Page', $audit->raw_data['title']);
-        $this->assertNotNull($audit->started_at);
-        $this->assertNotNull($audit->completed_at);
-        Http::assertSentCount(5);
+        $this->assertNull($audit->final_url);
+        $this->assertNull($audit->started_at);
+        $this->assertNull($audit->completed_at);
+        Http::assertNothingSent();
+        Queue::assertPushed(
+            RunSeoAuditJob::class,
+            fn (RunSeoAuditJob $job): bool => $job->auditId === $audit->id,
+        );
+
+        $this->getJson("/api/audits/{$audit->id}")
+            ->assertOk()
+            ->assertJsonPath('audit.status', Audit::STATUS_PENDING)
+            ->assertJsonPath('audit.requested_url', 'https://example.com/page');
+
+        $this->forgetMock(SeoCrawlerService::class);
     }
 
     public function test_crawler_failures_return_a_safe_json_error(): void
@@ -223,8 +282,11 @@ class AuditApiTest extends TestCase
             ]);
 
         $this->assertStringNotContainsString('Sensitive transport details', $response->getContent());
-        $this->assertDatabaseCount('audits', 0);
-        Log::shouldHaveReceived('warning')->once()->with('Synchronous SEO audit crawl failed.', [
+        $audit = Audit::sole();
+        $this->assertSame(Audit::STATUS_FAILED, $audit->status);
+        $this->assertSame(RunSeoAuditJob::GENERIC_FAILURE_REASON, $audit->failure_reason);
+        Log::shouldHaveReceived('warning')->once()->with('SEO audit job failed.', [
+            'audit_id' => $audit->id,
             'exception' => Exception::class,
         ]);
     }
@@ -252,7 +314,10 @@ class AuditApiTest extends TestCase
 
         $this->assertStringNotContainsString('DNS pinning', $response->getContent());
         Http::assertNothingSent();
-        $this->assertDatabaseCount('audits', 0);
+        $this->assertDatabaseHas('audits', [
+            'status' => Audit::STATUS_FAILED,
+            'failure_reason' => RunSeoAuditJob::GENERIC_FAILURE_REASON,
+        ]);
     }
 
     public function test_an_oversized_streamed_redirect_body_is_interrupted_and_rejected(): void
@@ -275,7 +340,10 @@ class AuditApiTest extends TestCase
             ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
         $this->assertSame(5_000_001, $progress->bytes);
         $this->assertLessThan(6_000_000, $progress->bytes);
-        $this->assertDatabaseCount('audits', 0);
+        $this->assertDatabaseHas('audits', [
+            'status' => Audit::STATUS_FAILED,
+            'failure_reason' => RunSeoAuditJob::GENERIC_FAILURE_REASON,
+        ]);
     }
 
     public function test_a_misleading_content_length_does_not_bypass_the_html_limit(): void
@@ -2016,7 +2084,10 @@ class AuditApiTest extends TestCase
         Http::assertNotSent(
             fn (Request $request) => $request->url() === 'http://127.0.0.1/private',
         );
-        $this->assertDatabaseCount('audits', 0);
+        $this->assertDatabaseHas('audits', [
+            'status' => Audit::STATUS_FAILED,
+            'failure_reason' => RunSeoAuditJob::GENERIC_FAILURE_REASON,
+        ]);
     }
 
     #[DataProvider('blockedRedirectProvider')]
@@ -2036,7 +2107,10 @@ class AuditApiTest extends TestCase
 
         Http::assertSentCount(1);
         Http::assertNotSent(fn (Request $request) => $request->url() === $destination);
-        $this->assertDatabaseCount('audits', 0);
+        $this->assertDatabaseHas('audits', [
+            'status' => Audit::STATUS_FAILED,
+            'failure_reason' => RunSeoAuditJob::GENERIC_FAILURE_REASON,
+        ]);
     }
 
     /**
