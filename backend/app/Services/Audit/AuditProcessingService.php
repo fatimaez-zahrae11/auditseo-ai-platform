@@ -59,17 +59,27 @@ class AuditProcessingService
     {
         $audit->refresh();
 
-        if ($audit->status === Audit::STATUS_COMPLETED) {
+        if (! in_array($audit->status, [Audit::STATUS_PENDING, Audit::STATUS_RUNNING], true)) {
             return $audit;
         }
 
-        $audit->update([
-            'status' => Audit::STATUS_RUNNING,
-            'started_at' => $audit->started_at ?? now(),
-            'completed_at' => null,
-            'failed_at' => null,
-            'failure_reason' => null,
-        ]);
+        $eligibleStatus = $audit->status;
+        $claimed = Audit::query()
+            ->whereKey($audit->id)
+            ->where('status', $eligibleStatus)
+            ->update([
+                'status' => Audit::STATUS_RUNNING,
+                'started_at' => $audit->started_at ?? now(),
+                'completed_at' => null,
+                'failed_at' => null,
+                'failure_reason' => null,
+            ]);
+
+        if ($claimed !== 1) {
+            return $audit->refresh();
+        }
+
+        $audit->refresh();
 
         $requestedUrl = $audit->requested_url;
         if (! is_string($requestedUrl) || trim($requestedUrl) === '') {

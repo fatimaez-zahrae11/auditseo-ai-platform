@@ -6,6 +6,7 @@ use App\Models\Audit;
 use App\Services\Audit\AuditProcessingService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -14,6 +15,8 @@ class RunSeoAuditJob implements ShouldQueue
     use Queueable;
 
     public const GENERIC_FAILURE_REASON = AuditProcessingService::GENERIC_FAILURE_REASON;
+
+    public const OVERLAP_LOCK_SECONDS = 240;
 
     public int $tries = 2;
 
@@ -24,6 +27,18 @@ class RunSeoAuditJob implements ShouldQueue
     public function __construct(
         public int $auditId
     ) {}
+
+    /**
+     * @return array<int, object>
+     */
+    public function middleware(): array
+    {
+        return [
+            (new WithoutOverlapping("seo-audit:{$this->auditId}"))
+                ->dontRelease()
+                ->expireAfter(self::OVERLAP_LOCK_SECONDS),
+        ];
+    }
 
     public function handle(AuditProcessingService $processingService): void
     {

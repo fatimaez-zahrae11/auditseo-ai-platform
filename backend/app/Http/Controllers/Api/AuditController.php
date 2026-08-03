@@ -9,6 +9,8 @@ use App\Models\Audit;
 use App\Models\Domain;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class AuditController extends Controller
 {
@@ -36,7 +38,25 @@ class AuditController extends Controller
             'status' => Audit::STATUS_PENDING,
         ]);
 
-        RunSeoAuditJob::dispatch($audit->id);
+        try {
+            RunSeoAuditJob::dispatch($audit->id);
+        } catch (Throwable $exception) {
+            $audit->update([
+                'status' => Audit::STATUS_FAILED,
+                'completed_at' => null,
+                'failed_at' => now(),
+                'failure_reason' => 'Audit dispatch failed.',
+            ]);
+
+            Log::warning('SEO audit dispatch failed.', [
+                'audit_id' => $audit->id,
+                'exception' => $exception::class,
+            ]);
+
+            return response()->json([
+                'message' => 'Audit service is temporarily unavailable.',
+            ], 503);
+        }
 
         return response()->json([
             'message' => 'Audit queued for processing.',

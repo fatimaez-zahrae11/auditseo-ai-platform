@@ -435,7 +435,7 @@ Audit statuses:
 - `pending`: stored and waiting for a worker.
 - `running`: the worker has started crawling and scoring.
 - `completed`: scores, `raw_data`, issues, and `final_url` are available.
-- `failed`: processing ended unsuccessfully after all automatic job attempts were exhausted. Internal failure details are not exposed in API responses.
+- `failed`: the audit could not be queued, or processing ended unsuccessfully after all automatic job attempts were exhausted. Internal failure details are not exposed in API responses.
 
 `requested_url` is the exact validated URL submitted for that audit. `final_url` is the final page URL reached after safe redirect handling and remains `null` until available. These audit-specific values are independent from the domain's host-level identity.
 
@@ -444,6 +444,15 @@ Common errors:
 - `401 Unauthorized` when authentication is missing or invalid.
 - `422 Validation Error` when `url` is missing, invalid, does not use HTTP(S), or targets an unsafe address.
 - `429 Too Many Requests` when the audit creation rate limit is exceeded.
+- `503 Service Unavailable` when the queue backend cannot accept the audit job:
+
+```json
+{
+  "message": "Audit service is temporarily unavailable."
+}
+```
+
+When dispatch fails, the stored audit is marked `failed` instead of remaining permanently `pending`, and no crawl is started. Queue and exception details are not returned to the client. The frontend may ask the user to submit a new audit later.
 
 ### Queue worker
 

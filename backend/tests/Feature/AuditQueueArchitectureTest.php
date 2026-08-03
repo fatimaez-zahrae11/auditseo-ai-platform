@@ -11,6 +11,7 @@ use App\Services\Seo\SeoCrawlerService;
 use App\Services\Seo\SeoScoringService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
@@ -129,6 +130,20 @@ class AuditQueueArchitectureTest extends TestCase
         $this->assertSame(30, $job->backoff);
     }
 
+    public function test_run_seo_audit_job_uses_a_non_releasing_per_audit_overlap_lock(): void
+    {
+        $job = new RunSeoAuditJob(123);
+        $middleware = $job->middleware();
+
+        $this->assertCount(1, $middleware);
+        $this->assertInstanceOf(WithoutOverlapping::class, $middleware[0]);
+        $this->assertSame('seo-audit:123', $middleware[0]->key);
+        $this->assertNull($middleware[0]->releaseAfter);
+        $this->assertSame(RunSeoAuditJob::OVERLAP_LOCK_SECONDS, $middleware[0]->expiresAfter);
+        $this->assertGreaterThan($job->timeout, $middleware[0]->expiresAfter);
+        $this->assertLessThan((int) config('queue.connections.redis.retry_after'), $middleware[0]->expiresAfter);
+    }
+
     public function test_run_seo_audit_job_records_running_and_completed_transitions(): void
     {
         $requestedUrl = 'https://example.com/queued-path?view=full';
@@ -142,7 +157,11 @@ class AuditQueueArchitectureTest extends TestCase
         $crawler->shouldReceive('crawl')
             ->once()
             ->with($requestedUrl)
-            ->andReturn($rawData);
+            ->andReturnUsing(function () use (&$statuses, $audit, $rawData): array {
+                $statuses[] = $audit->fresh()->status;
+
+                return $rawData;
+            });
         $processingService = new AuditProcessingService($crawler, new SeoScoringService);
 
         Audit::updated(function (Audit $updatedAudit) use (&$statuses, $audit): void {
@@ -293,6 +312,29 @@ class AuditQueueArchitectureTest extends TestCase
         $this->assertNull($audit->failed_at);
         $this->assertNull($audit->failure_reason);
         $this->assertSame('https://example.com/already-completed', $audit->final_url);
+    }
+
+    public function test_terminally_failed_audits_are_not_reprocessed_by_stale_jobs(): void
+    {
+        $failedAt = now()->subMinute();
+        $audit = $this->createAudit([
+            'status' => Audit::STATUS_FAILED,
+            'started_at' => now()->subMinutes(2),
+            'failed_at' => $failedAt,
+            'failure_reason' => RunSeoAuditJob::GENERIC_FAILURE_REASON,
+        ]);
+        $persistedFailedAt = $audit->fresh()->failed_at;
+        $crawler = $this->mock(SeoCrawlerService::class);
+        $crawler->shouldNotReceive('crawl');
+        $processingService = new AuditProcessingService($crawler, new SeoScoringService);
+
+        (new RunSeoAuditJob($audit->id))->handle($processingService);
+        $audit->refresh();
+
+        $this->assertSame(Audit::STATUS_FAILED, $audit->status);
+        $this->assertTrue($persistedFailedAt->equalTo($audit->failed_at));
+        $this->assertSame(RunSeoAuditJob::GENERIC_FAILURE_REASON, $audit->failure_reason);
+        $this->assertNull($audit->completed_at);
     }
 
     public function test_run_seo_audit_job_failure_callback_stores_only_a_generic_reason(): void

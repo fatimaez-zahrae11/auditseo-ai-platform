@@ -16,6 +16,7 @@ use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\InflateStream;
 use GuzzleHttp\Psr7\PumpStream;
 use GuzzleHttp\Psr7\Response as Psr7Response;
+use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Request;
@@ -258,6 +259,48 @@ class AuditApiTest extends TestCase
             ->assertJsonPath('audit.requested_url', 'https://example.com/page');
 
         $this->forgetMock(SeoCrawlerService::class);
+    }
+
+    public function test_queue_dispatch_failure_marks_the_audit_failed_and_returns_a_safe_service_error(): void
+    {
+        $user = User::factory()->create();
+        Sanctum::actingAs($user);
+        Log::spy();
+        $dispatcher = Mockery::mock(BusDispatcher::class);
+        $dispatcher->shouldReceive('dispatch')
+            ->once()
+            ->with(Mockery::on(fn (object $job): bool => $job instanceof RunSeoAuditJob))
+            ->andThrow(new Exception('Redis password=secret and internal queue details.'));
+        $this->app->instance(BusDispatcher::class, $dispatcher);
+
+        $response = $this->postQueuedAudit([
+            'url' => 'https://example.com/dispatch-failure',
+        ]);
+
+        $response
+            ->assertStatus(503)
+            ->assertExactJson([
+                'message' => 'Audit service is temporarily unavailable.',
+            ])
+            ->assertDontSee('Redis')
+            ->assertDontSee('secret')
+            ->assertDontSee('queue details')
+            ->assertDontSee('exception')
+            ->assertDontSee('trace');
+
+        $audit = Audit::sole();
+        $this->assertSame(Audit::STATUS_FAILED, $audit->status);
+        $this->assertNull($audit->started_at);
+        $this->assertNull($audit->completed_at);
+        $this->assertNotNull($audit->failed_at);
+        $this->assertSame('Audit dispatch failed.', $audit->failure_reason);
+        $this->assertArrayNotHasKey('failure_reason', $audit->toArray());
+        Http::assertNothingSent();
+
+        Log::shouldHaveReceived('warning')->once()->with('SEO audit dispatch failed.', [
+            'audit_id' => $audit->id,
+            'exception' => Exception::class,
+        ]);
     }
 
     public function test_crawler_failures_return_a_safe_json_error(): void
