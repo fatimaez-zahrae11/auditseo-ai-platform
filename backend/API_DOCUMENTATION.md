@@ -939,12 +939,38 @@ Successful response — `200 OK`:
 ```json
 {
   "total_audits": 5,
+  "completed_audits": 3,
+  "pending_audits": 1,
+  "running_audits": 0,
+  "failed_audits": 1,
   "average_global_score": 78,
   "total_issues": 14,
   "total_ai_recommendations": 3,
   "latest_audit": {
     "id": 12,
     "domain_id": 4,
+    "status": "pending",
+    "global_score": 0,
+    "technical_score": 0,
+    "content_score": 0,
+    "links_score": 0,
+    "performance_score": 0,
+    "raw_data": null,
+    "created_at": "2026-07-19T10:15:00.000000Z",
+    "updated_at": "2026-07-19T10:15:00.000000Z",
+    "domain": {
+      "id": 4,
+      "user_id": 1,
+      "domain_name": "example.com",
+      "url": "https://example.com/page",
+      "created_at": "2026-07-19T10:15:00.000000Z",
+      "updated_at": "2026-07-19T10:15:00.000000Z"
+    }
+  },
+  "latest_completed_audit": {
+    "id": 11,
+    "domain_id": 4,
+    "status": "completed",
     "global_score": 86,
     "technical_score": 100,
     "content_score": 75,
@@ -968,15 +994,26 @@ Successful response — `200 OK`:
 }
 ```
 
-`average_global_score` is rounded to the nearest whole number. If the user has no audits, the response is:
+`total_audits` counts every requested audit. The four status fields partition that total into `completed_audits`, `pending_audits`, `running_audits`, and `failed_audits`.
+
+`average_global_score` is calculated only from audits whose status is `completed` and is rounded to the nearest whole number. Pending, running, and failed audit scores are excluded. If the user has audits but none are completed, the average remains `0` for backward compatibility.
+
+`latest_audit` is the most recently requested audit regardless of status, so the frontend can immediately display newly queued work. `latest_completed_audit` is the most recent completed audit and is `null` when none exists. Poll pending or running audits through `GET /audits/{id}` until they reach a terminal status.
+
+If the user has no audits, the response is:
 
 ```json
 {
   "total_audits": 0,
+  "completed_audits": 0,
+  "pending_audits": 0,
+  "running_audits": 0,
+  "failed_audits": 0,
   "average_global_score": 0,
   "total_issues": 0,
   "total_ai_recommendations": 0,
-  "latest_audit": null
+  "latest_audit": null,
+  "latest_completed_audit": null
 }
 ```
 

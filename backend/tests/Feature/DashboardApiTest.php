@@ -40,12 +40,67 @@ class DashboardApiTest extends TestCase
         $this->getJson('/api/dashboard')
             ->assertOk()
             ->assertJsonPath('total_audits', 2)
+            ->assertJsonPath('completed_audits', 2)
+            ->assertJsonPath('pending_audits', 0)
+            ->assertJsonPath('running_audits', 0)
+            ->assertJsonPath('failed_audits', 0)
             ->assertJsonPath('average_global_score', 76)
             ->assertJsonPath('total_issues', 3)
             ->assertJsonPath('total_ai_recommendations', 3)
             ->assertJsonPath('latest_audit.id', $latestAudit->id)
             ->assertJsonPath('latest_audit.domain.user_id', $user->id)
-            ->assertJsonPath('latest_audit.domain.domain_name', 'latest.example.com');
+            ->assertJsonPath('latest_audit.domain.domain_name', 'latest.example.com')
+            ->assertJsonPath('latest_completed_audit.id', $latestAudit->id)
+            ->assertJsonPath('latest_completed_audit.domain.user_id', $user->id);
+    }
+
+    public function test_async_audit_statuses_do_not_distort_completed_score_average(): void
+    {
+        $user = User::factory()->create();
+        $this->createAuditFor($user, 'completed-old.example.com', 80);
+        $this->createAuditFor(
+            $user,
+            'pending.example.com',
+            0,
+            Audit::STATUS_PENDING,
+        );
+        $latestCompletedAudit = $this->createAuditFor($user, 'completed-latest.example.com', 60);
+        $this->createAuditFor($user, 'running.example.com', 100, Audit::STATUS_RUNNING);
+        $latestAudit = $this->createAuditFor($user, 'failed.example.com', 20, Audit::STATUS_FAILED);
+        Sanctum::actingAs($user);
+
+        $this->getJson('/api/dashboard')
+            ->assertOk()
+            ->assertJsonPath('total_audits', 5)
+            ->assertJsonPath('completed_audits', 2)
+            ->assertJsonPath('pending_audits', 1)
+            ->assertJsonPath('running_audits', 1)
+            ->assertJsonPath('failed_audits', 1)
+            ->assertJsonPath('average_global_score', 70)
+            ->assertJsonPath('latest_audit.id', $latestAudit->id)
+            ->assertJsonPath('latest_audit.status', Audit::STATUS_FAILED)
+            ->assertJsonPath('latest_completed_audit.id', $latestCompletedAudit->id)
+            ->assertJsonPath('latest_completed_audit.status', Audit::STATUS_COMPLETED);
+    }
+
+    public function test_dashboard_uses_zero_average_when_the_user_has_no_completed_audits(): void
+    {
+        $user = User::factory()->create();
+        $this->createAuditFor($user, 'pending.example.com', 100, Audit::STATUS_PENDING);
+        $this->createAuditFor($user, 'running.example.com', 100, Audit::STATUS_RUNNING);
+        $latestAudit = $this->createAuditFor($user, 'failed.example.com', 100, Audit::STATUS_FAILED);
+        Sanctum::actingAs($user);
+
+        $this->getJson('/api/dashboard')
+            ->assertOk()
+            ->assertJsonPath('total_audits', 3)
+            ->assertJsonPath('completed_audits', 0)
+            ->assertJsonPath('pending_audits', 1)
+            ->assertJsonPath('running_audits', 1)
+            ->assertJsonPath('failed_audits', 1)
+            ->assertJsonPath('average_global_score', 0)
+            ->assertJsonPath('latest_audit.id', $latestAudit->id)
+            ->assertJsonPath('latest_completed_audit', null);
     }
 
     public function test_dashboard_only_includes_the_authenticated_users_data(): void
@@ -70,10 +125,15 @@ class DashboardApiTest extends TestCase
         $this->getJson('/api/dashboard')
             ->assertOk()
             ->assertJsonPath('total_audits', 1)
+            ->assertJsonPath('completed_audits', 1)
+            ->assertJsonPath('pending_audits', 0)
+            ->assertJsonPath('running_audits', 0)
+            ->assertJsonPath('failed_audits', 0)
             ->assertJsonPath('average_global_score', 60)
             ->assertJsonPath('total_issues', 1)
             ->assertJsonPath('total_ai_recommendations', 1)
             ->assertJsonPath('latest_audit.id', $ownAudit->id)
+            ->assertJsonPath('latest_completed_audit.id', $ownAudit->id)
             ->assertJsonMissing(['domain_name' => 'other.example.com']);
     }
 
@@ -85,15 +145,24 @@ class DashboardApiTest extends TestCase
             ->assertOk()
             ->assertExactJson([
                 'total_audits' => 0,
+                'completed_audits' => 0,
+                'pending_audits' => 0,
+                'running_audits' => 0,
+                'failed_audits' => 0,
                 'average_global_score' => 0,
                 'total_issues' => 0,
                 'total_ai_recommendations' => 0,
                 'latest_audit' => null,
+                'latest_completed_audit' => null,
             ]);
     }
 
-    private function createAuditFor(User $user, string $domainName, int $globalScore): Audit
-    {
+    private function createAuditFor(
+        User $user,
+        string $domainName,
+        int $globalScore,
+        string $status = Audit::STATUS_COMPLETED,
+    ): Audit {
         $domain = Domain::create([
             'user_id' => $user->id,
             'domain_name' => $domainName,
@@ -107,6 +176,10 @@ class DashboardApiTest extends TestCase
             'links_score' => $globalScore,
             'performance_score' => $globalScore,
             'raw_data' => null,
+            'status' => $status,
+            'started_at' => $status === Audit::STATUS_PENDING ? null : now()->subMinute(),
+            'completed_at' => $status === Audit::STATUS_COMPLETED ? now() : null,
+            'failed_at' => $status === Audit::STATUS_FAILED ? now() : null,
         ]);
     }
 
