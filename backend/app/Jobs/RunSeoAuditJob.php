@@ -2,12 +2,14 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\AuditProcessingException;
 use App\Models\Audit;
 use App\Services\Audit\AuditProcessingService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 
 class RunSeoAuditJob implements ShouldQueue
@@ -42,9 +44,20 @@ class RunSeoAuditJob implements ShouldQueue
 
     public function handle(AuditProcessingService $processingService): void
     {
-        $audit = Audit::findOrFail($this->auditId);
+        try {
+            $audit = Audit::findOrFail($this->auditId);
 
-        $processingService->process($audit);
+            $processingService->process($audit);
+        } catch (Throwable $exception) {
+            Log::warning('SEO audit attempt failed.', [
+                'audit_id' => $this->auditId,
+                'exception' => $exception::class,
+            ]);
+
+            // Do not retain the original exception as a previous exception:
+            // Laravel persists the full exception chain for failed jobs.
+            throw new AuditProcessingException($exception instanceof ValidationException);
+        }
     }
 
     public function failed(Throwable $exception): void

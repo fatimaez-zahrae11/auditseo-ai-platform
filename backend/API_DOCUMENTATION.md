@@ -465,6 +465,8 @@ REDIS_QUEUE_RETRY_AFTER=300
 
 The Redis `retry_after` value must remain comfortably higher than the audit job timeout. The audit job currently has a 180-second timeout, so the documented 300-second reservation prevents another worker from receiving the same audit while the first worker is still allowed to run.
 
+Crawler and transport failures are converted to a generic `Audit processing failed.` exception before Laravel records a terminal failed job. The application does not attach the original exception or crawled URL query string to that exception, and its audit-job logs contain only the audit ID and exception class. Operational logging should likewise avoid recording full crawled URLs with query strings; this application behavior does not imply that production monitoring has been configured.
+
 At least one queue worker must be running for pending audits to progress:
 
 ```bash

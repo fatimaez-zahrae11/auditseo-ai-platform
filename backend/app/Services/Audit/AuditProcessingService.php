@@ -2,6 +2,7 @@
 
 namespace App\Services\Audit;
 
+use App\Exceptions\AuditProcessingException;
 use App\Models\Audit;
 use App\Models\Domain;
 use App\Services\Seo\SeoCrawlerService;
@@ -12,7 +13,7 @@ use RuntimeException;
 
 class AuditProcessingService
 {
-    public const GENERIC_FAILURE_REASON = 'Audit processing failed.';
+    public const GENERIC_FAILURE_REASON = AuditProcessingException::MESSAGE;
 
     public function __construct(
         private readonly SeoCrawlerService $crawler,

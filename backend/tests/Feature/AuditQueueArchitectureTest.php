@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\AuditProcessingException;
 use App\Jobs\RunSeoAuditJob;
 use App\Models\Audit;
 use App\Models\Domain;
@@ -191,7 +192,7 @@ class AuditQueueArchitectureTest extends TestCase
 
     public function test_first_attempt_failure_stays_running_until_the_terminal_failure_callback(): void
     {
-        $requestedUrl = 'https://example.com/exact-path?token=stored-value';
+        $requestedUrl = 'https://example.com/page?token=secret123&signature=abc';
         $user = User::factory()->create();
         $audit = $this->createAudit([
             'requested_url' => $requestedUrl,
@@ -200,7 +201,7 @@ class AuditQueueArchitectureTest extends TestCase
         $crawler->shouldReceive('crawl')
             ->once()
             ->with($requestedUrl)
-            ->andThrow(new RuntimeException('Sensitive provider response with secret details.'));
+            ->andThrow(new RuntimeException("Connection failed for {$requestedUrl}."));
         $processingService = new AuditProcessingService($crawler, new SeoScoringService);
         $job = new RunSeoAuditJob($audit->id);
         $exception = null;
@@ -208,9 +209,13 @@ class AuditQueueArchitectureTest extends TestCase
         try {
             $job->handle($processingService);
             $this->fail('The processing exception was not rethrown.');
-        } catch (RuntimeException $caughtException) {
+        } catch (AuditProcessingException $caughtException) {
             $exception = $caughtException;
-            $this->assertSame('Sensitive provider response with secret details.', $caughtException->getMessage());
+            $this->assertSame(AuditProcessingException::MESSAGE, $caughtException->getMessage());
+            $this->assertNull($caughtException->getPrevious());
+            $this->assertStringNotContainsString('secret123', (string) $caughtException);
+            $this->assertStringNotContainsString('signature=abc', (string) $caughtException);
+            $this->assertStringNotContainsString('token=secret123', (string) $caughtException);
         }
 
         $audit->refresh();
@@ -226,10 +231,9 @@ class AuditQueueArchitectureTest extends TestCase
         $this->getJson("/api/audits/{$audit->id}")
             ->assertOk()
             ->assertJsonPath('audit.status', Audit::STATUS_RUNNING)
-            ->assertJsonMissingPath('audit.failure_reason')
-            ->assertDontSee('Sensitive provider response');
+            ->assertJsonMissingPath('audit.failure_reason');
 
-        $this->assertInstanceOf(RuntimeException::class, $exception);
+        $this->assertInstanceOf(AuditProcessingException::class, $exception);
         $job->failed($exception);
         $audit->refresh();
 
@@ -238,6 +242,55 @@ class AuditQueueArchitectureTest extends TestCase
         $this->assertNull($audit->completed_at);
         $this->assertSame(AuditProcessingService::GENERIC_FAILURE_REASON, $audit->failure_reason);
         $this->assertStringNotContainsString('Sensitive', $audit->failure_reason);
+    }
+
+    public function test_terminal_job_exception_is_sanitized_in_failed_job_storage_and_logs(): void
+    {
+        $requestedUrl = 'https://example.com/page?token=secret123&signature=abc';
+        $audit = $this->createAudit(['requested_url' => $requestedUrl]);
+        $crawler = $this->mock(SeoCrawlerService::class);
+        $crawler->shouldReceive('crawl')
+            ->once()
+            ->with($requestedUrl)
+            ->andThrow(new RuntimeException("Transport failed for {$requestedUrl}; raw response: secret123."));
+        $processingService = new AuditProcessingService($crawler, new SeoScoringService);
+        $job = new RunSeoAuditJob($audit->id);
+        Log::spy();
+
+        try {
+            $job->handle($processingService);
+            $this->fail('The processing exception was not rethrown.');
+        } catch (AuditProcessingException $exception) {
+            $this->assertSame(AuditProcessingException::MESSAGE, $exception->getMessage());
+            $this->assertNull($exception->getPrevious());
+        }
+
+        $job->failed($exception);
+        $this->app['queue']->connection('database')->push($job);
+        $payload = DB::table('jobs')->value('payload');
+        $uuid = $this->app['queue.failer']->log('database', 'default', $payload, $exception);
+        $failedJob = DB::table('failed_jobs')->where('uuid', $uuid)->sole();
+        $audit->refresh();
+
+        $this->assertSame(Audit::STATUS_FAILED, $audit->status);
+        $this->assertSame(AuditProcessingService::GENERIC_FAILURE_REASON, $audit->failure_reason);
+        $this->assertStringContainsString(AuditProcessingException::MESSAGE, $failedJob->exception);
+        $this->assertStringNotContainsString('raw response', $failedJob->exception);
+
+        foreach (['secret123', 'signature=abc', 'token=secret123'] as $sensitiveValue) {
+            $this->assertStringNotContainsString($sensitiveValue, $failedJob->exception);
+            $this->assertStringNotContainsString($sensitiveValue, $failedJob->payload);
+        }
+
+        Log::shouldHaveReceived('warning')->with('SEO audit attempt failed.', [
+            'audit_id' => $audit->id,
+            'exception' => RuntimeException::class,
+        ])->once();
+        Log::shouldHaveReceived('warning')->with('SEO audit job failed.', [
+            'audit_id' => $audit->id,
+            'exception' => AuditProcessingException::class,
+        ])->once();
+        Log::shouldHaveReceived('warning')->twice();
     }
 
     public function test_a_failed_first_attempt_can_retry_successfully_without_resetting_started_at(): void

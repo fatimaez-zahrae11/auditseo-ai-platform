@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\AuditProcessingException;
 use App\Jobs\RunSeoAuditJob;
 use App\Models\Audit;
 use App\Models\Domain;
@@ -24,7 +25,6 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
-use Illuminate\Validation\ValidationException;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -171,13 +171,21 @@ class AuditApiTest extends TestCase
 
         try {
             $job->handle($this->app->make(AuditProcessingService::class));
-        } catch (ValidationException $exception) {
+        } catch (AuditProcessingException $exception) {
             $job->failed($exception);
 
+            if ($exception->isValidationFailure()) {
+                return TestResponse::fromBaseResponse(response()->json([
+                    'message' => 'The given data was invalid.',
+                    'errors' => [
+                        'url' => ['The requested URL could not be processed safely.'],
+                    ],
+                ], 422));
+            }
+
             return TestResponse::fromBaseResponse(response()->json([
-                'message' => 'The given data was invalid.',
-                'errors' => $exception->errors(),
-            ], 422));
+                'message' => 'Unable to fetch the requested URL.',
+            ], 502));
         } catch (Throwable $exception) {
             $job->failed($exception);
 
@@ -305,16 +313,17 @@ class AuditApiTest extends TestCase
 
     public function test_crawler_failures_return_a_safe_json_error(): void
     {
+        $requestedUrl = 'https://example.com/page?token=secret123&signature=abc';
         Sanctum::actingAs(User::factory()->create());
         Log::spy();
         $crawler = $this->mock(SeoCrawlerService::class);
         $crawler->shouldReceive('crawl')
             ->once()
-            ->with('https://example.com/page')
-            ->andThrow(new Exception('Sensitive transport details'));
+            ->with($requestedUrl)
+            ->andThrow(new Exception("Sensitive transport details for {$requestedUrl}"));
 
         $response = $this->postJson('/api/audits', [
-            'url' => 'https://example.com/page',
+            'url' => $requestedUrl,
         ]);
         $this->forgetMock(SeoCrawlerService::class);
 
@@ -325,13 +334,21 @@ class AuditApiTest extends TestCase
             ]);
 
         $this->assertStringNotContainsString('Sensitive transport details', $response->getContent());
+        $this->assertStringNotContainsString('secret123', $response->getContent());
+        $this->assertStringNotContainsString('signature=abc', $response->getContent());
+        $this->assertStringNotContainsString('token=secret123', $response->getContent());
         $audit = Audit::sole();
         $this->assertSame(Audit::STATUS_FAILED, $audit->status);
         $this->assertSame(RunSeoAuditJob::GENERIC_FAILURE_REASON, $audit->failure_reason);
-        Log::shouldHaveReceived('warning')->once()->with('SEO audit job failed.', [
+        Log::shouldHaveReceived('warning')->with('SEO audit attempt failed.', [
             'audit_id' => $audit->id,
             'exception' => Exception::class,
-        ]);
+        ])->once();
+        Log::shouldHaveReceived('warning')->with('SEO audit job failed.', [
+            'audit_id' => $audit->id,
+            'exception' => AuditProcessingException::class,
+        ])->once();
+        Log::shouldHaveReceived('warning')->twice();
     }
 
     public function test_crawler_fails_safely_without_falling_back_when_dns_pinning_is_unavailable(): void
