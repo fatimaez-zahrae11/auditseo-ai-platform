@@ -18,6 +18,8 @@ All endpoint paths below are relative to this base URL. For example, `POST /regi
 POST http://127.0.0.1:8000/api/register
 ```
 
+Endpoint paths such as `/audits/12` are relative to this API base URL. In contrast, response fields named `poll_url` already begin with `/api`, and pagination URL fields are absolute URLs. Do not blindly prepend `API_BASE_URL` to either form; the relevant sections below explain the recommended handling.
+
 ### Required headers
 
 Send this header with every API request:
@@ -91,7 +93,7 @@ export async function apiRequest(path, { token, ...options } = {}) {
 | `GET` | `/me` | Yes | Get the authenticated user |
 | `POST` | `/logout` | Yes | Revoke the current token |
 | `POST` | `/logout-all` | Yes | Revoke all tokens for the authenticated user |
-| `POST` | `/audits` | Yes | Run and store a new SEO audit |
+| `POST` | `/audits` | Yes | Queue a new SEO audit |
 | `GET` | `/audits` | Yes | List the user's audits with pagination |
 | `GET` | `/audits/{id}` | Yes | Get one owned audit |
 | `POST` | `/audits/{audit}/recommendations` | Yes | Generate and store an AI recommendation |
@@ -458,6 +460,8 @@ GET /api/audits/12
 Authorization: Bearer <token>
 ```
 
+The returned `poll_url` is relative to the backend origin and already includes `/api`. If the frontend helper uses an `API_BASE_URL` that ends in `/api`, call `apiRequest('/audits/' + data.audit.id, { token })` rather than concatenating that base with `poll_url`. Alternatively, resolve `poll_url` against the backend origin and request the resulting URL directly.
+
 Audit statuses:
 
 - `pending`: stored and waiting for a worker.
@@ -505,7 +509,7 @@ This documents the required worker command only; it does not imply that Supervis
 
 ### List audits
 
-Returns the authenticated user's audits, ordered newest first, in pages of 20. Each audit includes its domain.
+Returns summary records for the authenticated user's audits, ordered newest first, in pages of 20. Nested domains and full audit details are not included.
 
 - **Method:** `GET`
 - **URL:** `/audits`
@@ -553,7 +557,7 @@ Successful response — `200 OK`:
 
 Each item is a summary containing only `id`, `domain_id`, `requested_url`, `final_url`, `status`, the five score fields, `created_at`, `updated_at`, `started_at`, `completed_at`, and `failed_at`. The index does not include `raw_data`, `failure_reason`, the nested domain, issues, AI recommendations, or crawl/page details. Fetch `GET /audits/{id}` for the complete owned audit.
 
-The response always uses separate `audits` and `pagination` objects. `previous_page_url` is `null` on the first page, and `next_page_url` is `null` on the last page. When the user has no audits, `audits` is an empty array; `from` and `to` are `null`.
+The response always uses separate `audits` and `pagination` objects. Pagination URL fields are absolute backend URLs, so request them directly rather than prepending `API_BASE_URL`; when using the relative-path helper, pass `page` to `/audits` instead. `previous_page_url` is `null` on the first page, and `next_page_url` is `null` on the last page. When the user has no audits, `audits` is an empty array; `from` and `to` are `null`.
 
 Common error:
 
@@ -584,6 +588,9 @@ Successful response — `200 OK`:
   "audit": {
     "id": 12,
     "domain_id": 4,
+    "requested_url": "https://example.com/page",
+    "final_url": "https://example.com/page",
+    "status": "completed",
     "global_score": 86,
     "technical_score": 100,
     "content_score": 75,
@@ -595,6 +602,9 @@ Successful response — `200 OK`:
     },
     "created_at": "2026-07-19T10:15:00.000000Z",
     "updated_at": "2026-07-19T10:15:00.000000Z",
+    "started_at": "2026-07-19T10:15:01.000000Z",
+    "completed_at": "2026-07-19T10:15:05.000000Z",
+    "failed_at": null,
     "domain": {
       "id": 4,
       "user_id": 1,
@@ -880,7 +890,7 @@ Successful response — `201 Created`:
   "recommendation": {
     "id": 8,
     "audit_id": 12,
-    "provider": "openrouter",
+    "provider": "dahl",
     "prompt_summary": "SEO recommendations for audit #12 with 3 detected issue(s).",
     "generated_text": "Prioritize adding a descriptive page title, then improve image alternative text and internal linking.",
     "created_at": "2026-07-19T10:20:00.000000Z",
@@ -889,7 +899,7 @@ Successful response — `201 Created`:
 }
 ```
 
-`recommendation.generated_text` is stored and returned as an ordinary string. Treat it as untrusted provider-generated content. If the frontend renders it as Markdown or HTML, it must use an appropriate sanitizer and must not inject the value directly into the DOM as trusted HTML.
+`recommendation.provider` is the backend's configured provider label. Treat it as display metadata and do not hardcode frontend behavior to a specific provider value. `recommendation.generated_text` is stored and returned as an ordinary string. Treat it as untrusted provider-generated content. If the frontend renders it as Markdown or HTML, it must use an appropriate sanitizer and must not inject the value directly into the DOM as trusted HTML.
 
 Common errors:
 
@@ -933,7 +943,7 @@ Successful response — `200 OK`:
     {
       "id": 8,
       "audit_id": 12,
-      "provider": "openrouter",
+      "provider": "dahl",
       "prompt_summary": "SEO recommendations for audit #12 with 3 detected issue(s).",
       "generated_text": "Prioritize adding a descriptive page title, then improve image alternative text and internal linking.",
       "created_at": "2026-07-19T10:20:00.000000Z",
@@ -953,7 +963,7 @@ Successful response — `200 OK`:
 }
 ```
 
-The frontend must consume both the `recommendations` array and the `pagination` object rather than expecting the endpoint to return the complete history in one array. Use the pagination URLs or the `page` query parameter to request more results. When no recommendation has been generated, `recommendations` is an empty array, `total` is `0`, and `from` and `to` are `null`. Treat every stored `generated_text` value as untrusted provider output and sanitize any Markdown/HTML rendering; do not regenerate merely to display prior results.
+The frontend must consume both the `recommendations` array and the `pagination` object rather than expecting the endpoint to return the complete history in one array. Pagination URL fields are absolute backend URLs and can be requested directly; when using the relative-path helper, pass `page` to `/audits/{audit}/recommendations` instead. When no recommendation has been generated, `recommendations` is an empty array, `total` is `0`, and `from` and `to` are `null`. Treat every stored `generated_text` value as untrusted provider output and sanitize any Markdown/HTML rendering; do not regenerate merely to display prior results.
 
 Common errors:
 
@@ -1063,7 +1073,6 @@ Common error:
 - Configure the frontend API base URL to the deployed backend API URL, such as `https://api.example.com/api`. Do not ship the local `http://127.0.0.1:8000/api` value in a production frontend.
 - Set backend `CORS_ALLOWED_ORIGINS` to include the exact production frontend origin, including its scheme and any non-default port. Do not use a wildcard origin for authenticated frontend traffic.
 - Set backend `APP_URL` to the public HTTPS backend URL used to generate signed email-verification links.
-- Set backend `FRONTEND_URL` to the public HTTPS frontend URL.
 - Set `MAIL_MAILER=resend` in the production backend environment. Put the Resend API key value in `RESEND_API_KEY` only in the real production `.env`; keep the committed `.env.example` placeholder empty.
 - Verify the production sending domain in Resend before sending production email. Configure the DNS records supplied by Resend in Cloudflare (or the domain's DNS provider), and wait for Resend to confirm verification.
 - Set `MAIL_FROM_ADDRESS` to an address on that verified domain and set `MAIL_FROM_NAME` to the desired sender name.
@@ -1110,6 +1119,18 @@ Login returns `403` when valid credentials belong to an unverified user. In that
 
 The requested resource does not exist or is not owned by the authenticated user. Do not use the response to infer whether another user's resource exists.
 
+### `409 Conflict`
+
+AI recommendation generation returns `409` when the owned audit is not `completed`, including when its status is `pending`, `running`, or `failed`:
+
+```json
+{
+  "message": "AI recommendations are only available after the audit is completed."
+}
+```
+
+Keep the AI action disabled unless `audit.status === "completed"`. Continue polling pending/running audits; show the failed state without offering AI generation for failed audits.
+
 ### `422 Validation Error`
 
 Laravel validation errors normally use this shape:
@@ -1146,27 +1167,56 @@ AI recommendation generation could not obtain a valid provider response:
 
 Keep the current audit page usable, show a retry message, and avoid tight automatic retry loops.
 
-## Important frontend notes
+### `503 Service Unavailable`
 
-- After registration, show "check your email"; registration does not authenticate the user and does not return a token.
-- Do not expect or store a token from `POST /register`.
-- Handle the login `403` email-verification response separately from invalid credentials and provide a resend-verification form or action.
-- After successful email verification, send the user through login again.
-- Store a Sanctum token only after successful login, and remove it after logout, logout-all, or an authentication failure.
-- Send `Authorization: Bearer <token>` on every protected API request.
-- After `POST /audits` returns `202`, poll its `poll_url` and show pending/running progress until the audit reaches `completed` or `failed`.
-- Display `global_score` prominently and show `technical_score`, `content_score`, `links_score`, and `performance_score` as category scores.
-- Group audit issues by `category` and optionally by `severity` for summary and detail views.
-- Use `raw_data` to build detailed tabs such as Technical SEO, Content, Links, Performance, Structured Data, Sitemap/Robots, and Crawl.
-- The frontend should call only the Laravel API. It should not call external SEO, crawling, validation, or AI services directly.
-- The frontend never calls the AI provider directly.
-- The frontend never needs or receives the AI API key.
-- Use Laravel's `POST /audits/{audit}/recommendations` endpoint to generate a recommendation.
-- Laravel stores each successfully generated recommendation.
-- Use `GET /audits/{audit}/recommendations` to retrieve stored results without making another AI request.
-- Display the `generated_text` field from the returned recommendation object.
-- Treat AI provider failures as the generic backend `502`; never render internal provider errors even if an unexpected upstream message is encountered.
-- Recommendations returned by the GET endpoint are ordered newest to oldest.
-- Dashboard statistics contain only data owned by the authenticated user.
-- A resource belonging to another user is returned as `404 Not Found`, not as accessible data.
-- Treat IDs as opaque identifiers and never assume that changing an ID grants access.
+Audit creation returns `503` when the queue backend cannot accept the job:
+
+```json
+{
+  "message": "Audit service is temporarily unavailable."
+}
+```
+
+The public health and protected readiness endpoints can also return `503` using their documented safe status objects. Keep the current UI usable, show a temporary-service message, and avoid tight retry or polling loops. Do not expect dependency names or internal exception details.
+
+## Frontend integration checklist
+
+### Configuration and transport
+
+- Set one environment-specific API base URL ending in `/api`; use `http://127.0.0.1:8000/api` only for local development.
+- Send `Accept: application/json` on every request and `Content-Type: application/json` when sending JSON.
+- Copyable request and response bodies are provided in the Register, Login, Create an audit, Get one audit, AI recommendations, and Dashboard sections above.
+
+### Authentication
+
+- Register, then show a "check your email" state. Registration returns `201` with a message but no token.
+- Preserve the complete signed verification URL from the email. After verification succeeds, send the user to login.
+- Treat the login `403` email-verification response separately from invalid credentials and offer verification resend.
+- Store the token only from a successful login and send `Authorization: Bearer <token>` on every protected request.
+- Remove the token after logout, logout-all, or `401 Unauthorized`; logout-all invalidates other sessions too.
+
+### Audits and dashboard
+
+- Create an audit with `POST /audits`. Expect `202 Accepted`, an initial `pending` summary, and `poll_url`; never expect completed scores or issues from this response.
+- Poll until `audit.status` becomes `completed` or `failed`. The returned `poll_url` already contains `/api`; resolve it against the backend origin, or use `/audits/{id}` with an API base URL that already ends in `/api`. Show progress for `pending` and `running`, and stop polling at either terminal status.
+- Use `GET /audits` only for paginated summary cards/rows. Fetch `GET /audits/{id}` for `raw_data`, issues, domain data, and complete lifecycle fields.
+- Use `GET /dashboard` for owned status counts and summary widgets. `average_global_score` includes completed audits only; distinguish `latest_audit` from `latest_completed_audit`.
+
+### AI recommendations
+
+- Enable recommendation generation only when `audit.status === "completed"`; pending, running, and failed audits return `409 Conflict`.
+- `POST /audits/{audit}/recommendations` is synchronous. Show a loading state, prevent duplicate submission, and consume the returned `201` recommendation.
+- Use the paginated `GET /audits/{audit}/recommendations` endpoint to display stored history without calling the provider again.
+- Treat `provider` as configurable metadata. Treat every `generated_text` value as untrusted and sanitize any Markdown/HTML rendering.
+- Call only the Laravel API. Never request, store, or send an AI provider key from the frontend.
+
+### Error handling
+
+- `401`: clear invalid authentication and send the user to login.
+- `403`: handle unverified-login and invalid/expired verification-link cases without treating them as `401`.
+- `404`: show not found; do not infer whether another user owns the identifier.
+- `409`: keep AI generation disabled until the audit is completed.
+- `422`: render field errors when `errors` exists; login failures can contain only a message.
+- `429`: stop repeated submission and ask the user to retry later.
+- `502`: keep the audit usable and show a generic AI-service error.
+- `503`: show a temporary-service error and avoid aggressive automatic retries.
