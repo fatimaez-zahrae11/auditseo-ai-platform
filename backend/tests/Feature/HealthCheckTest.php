@@ -166,7 +166,7 @@ class HealthCheckTest extends TestCase
 
         $this->createAudit($domain, [
             'status' => Audit::STATUS_RUNNING,
-            'started_at' => now()->subMinutes(6),
+            'started_at' => now()->subMinutes(16),
         ]);
         $this->createAudit($domain, [
             'status' => Audit::STATUS_FAILED,
@@ -182,11 +182,13 @@ class HealthCheckTest extends TestCase
             ->assertJsonPath('audit_counts.recent_failed', 1);
     }
 
-    public function test_fresh_pending_and_running_audits_are_not_marked_stale(): void
+    public function test_pending_and_running_audits_younger_than_their_thresholds_are_not_stale(): void
     {
         $this->travelTo(now()->startOfSecond());
         Sanctum::actingAs($user = User::factory()->create());
         $domain = $this->createDomain($user);
+
+        $this->assertSame(15, config('health.audit_queue.stale_running_minutes'));
 
         $freshPending = $this->createAudit($domain, [
             'status' => Audit::STATUS_PENDING,
@@ -196,7 +198,7 @@ class HealthCheckTest extends TestCase
             ->save());
         $this->createAudit($domain, [
             'status' => Audit::STATUS_RUNNING,
-            'started_at' => now()->subMinutes(4),
+            'started_at' => now()->subMinutes(14),
         ]);
 
         $this->getJson('/api/health/readiness')
@@ -205,6 +207,33 @@ class HealthCheckTest extends TestCase
             ->assertJsonPath('checks.audit_queue', 'ok')
             ->assertJsonPath('audit_counts.stale_pending', 0)
             ->assertJsonPath('audit_counts.stale_running', 0);
+    }
+
+    public function test_stale_running_threshold_is_configurable(): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        Sanctum::actingAs($user = User::factory()->create());
+        $domain = $this->createDomain($user);
+
+        $this->createAudit($domain, [
+            'status' => Audit::STATUS_RUNNING,
+            'started_at' => now()->subMinutes(16),
+        ]);
+
+        config(['health.audit_queue.stale_running_minutes' => 20]);
+
+        $this->getJson('/api/health/readiness')
+            ->assertOk()
+            ->assertJsonPath('status', 'ready')
+            ->assertJsonPath('audit_counts.stale_running', 0);
+
+        config(['health.audit_queue.stale_running_minutes' => 10]);
+
+        $this->getJson('/api/health/readiness')
+            ->assertServiceUnavailable()
+            ->assertJsonPath('status', 'not_ready')
+            ->assertJsonPath('checks.audit_queue', 'at_risk')
+            ->assertJsonPath('audit_counts.stale_running', 1);
     }
 
     private function createDomain(User $user): Domain

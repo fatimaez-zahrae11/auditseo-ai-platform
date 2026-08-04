@@ -122,7 +122,9 @@ If the database check fails, it returns `503 Service Unavailable` without identi
 
 `GET /api/health/readiness` is protected by Sanctum authentication and verified-email middleware. It is intended for authorized operations and monitoring clients, not anonymous public monitoring.
 
-The readiness check verifies database connectivity. It also pings the configured Redis connections when either the active queue connection or active cache store uses Redis. It reports audit-processing symptoms by counting pending audits older than the configured pending threshold, running audits older than the configured running threshold, and failed audits within the configured recent-failure window. Defaults are 10 minutes, 5 minutes, and 60 minutes respectively; deployments can set `HEALTH_STALE_PENDING_MINUTES`, `HEALTH_STALE_RUNNING_MINUTES`, and `HEALTH_RECENT_FAILED_MINUTES`.
+The readiness check verifies database connectivity. It also pings the configured Redis connections when either the active queue connection or active cache store uses Redis. It reports audit-processing symptoms by counting pending audits older than the configured pending threshold, running audits older than the configured running threshold, and failed audits within the configured recent-failure window. Defaults are 10 minutes, 15 minutes, and 60 minutes respectively; deployments can set `HEALTH_STALE_PENDING_MINUTES`, `HEALTH_STALE_RUNNING_MINUTES`, and `HEALTH_RECENT_FAILED_MINUTES`.
+
+The 15-minute running threshold intentionally exceeds the complete retry lifecycle with margin. The audit job allows two 180-second attempts with a 30-second backoff, while a timed-out Redis job can remain reserved for the configured 300-second `retry_after` period before its next attempt. Because `started_at` is preserved across retries, the additional margin prevents a legitimate retry from being classified as stale too early.
 
 A ready response returns `200 OK` and only safe labels and counts:
 
