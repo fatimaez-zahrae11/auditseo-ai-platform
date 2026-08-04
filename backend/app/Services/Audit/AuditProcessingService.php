@@ -4,10 +4,8 @@ namespace App\Services\Audit;
 
 use App\Exceptions\AuditProcessingException;
 use App\Models\Audit;
-use App\Models\Domain;
 use App\Services\Seo\SeoCrawlerService;
 use App\Services\Seo\SeoScoringService;
-use DateTimeInterface;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -26,34 +24,6 @@ class AuditProcessingService
     public function crawl(string $requestedUrl): array
     {
         return $this->crawler->crawl($requestedUrl);
-    }
-
-    /**
-     * @param  array<string, mixed>  $rawData
-     */
-    public function createCompletedAudit(
-        Domain $domain,
-        string $requestedUrl,
-        array $rawData,
-        DateTimeInterface $startedAt,
-    ): Audit {
-        $scores = $this->scoring->calculate($rawData);
-
-        return DB::transaction(function () use ($domain, $requestedUrl, $rawData, $startedAt, $scores): Audit {
-            $audit = $domain->audits()->create([
-                ...$scores,
-                'raw_data' => $rawData,
-                'requested_url' => $requestedUrl,
-                'final_url' => $this->finalUrl($rawData),
-                'status' => Audit::STATUS_COMPLETED,
-                'started_at' => $startedAt,
-                'completed_at' => now(),
-            ]);
-
-            $this->createIssues($audit, $rawData);
-
-            return $audit;
-        });
     }
 
     public function process(Audit $audit): Audit

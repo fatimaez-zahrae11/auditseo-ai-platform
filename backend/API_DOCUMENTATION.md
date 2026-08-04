@@ -1062,7 +1062,7 @@ Common error:
 - Set backend `CORS_ALLOWED_ORIGINS` to include the exact production frontend origin, including its scheme and any non-default port. Do not use a wildcard origin for authenticated frontend traffic.
 - Set backend `APP_URL` to the public HTTPS backend URL used to generate signed email-verification links.
 - Set backend `FRONTEND_URL` to the public HTTPS frontend URL.
-- Set `MAIL_MAILER=resend` in the production backend environment. Put the Resend API key in `RESEND_API_KEY` only in the real production `.env`; never commit the key or add it to `.env.example`.
+- Set `MAIL_MAILER=resend` in the production backend environment. Put the Resend API key value in `RESEND_API_KEY` only in the real production `.env`; keep the committed `.env.example` placeholder empty.
 - Verify the production sending domain in Resend before sending production email. Configure the DNS records supplied by Resend in Cloudflare (or the domain's DNS provider), and wait for Resend to confirm verification.
 - Set `MAIL_FROM_ADDRESS` to an address on that verified domain and set `MAIL_FROM_NAME` to the desired sender name.
 - Production verification emails must contain HTTPS production URLs. A link generated for `localhost` or `127.0.0.1` will not provide a usable production verification flow.
@@ -1070,7 +1070,7 @@ Common error:
 - Use Redis through the installed Predis client for queues, shared application cache, and rate-limit counters in production (`QUEUE_CONNECTION=redis`, `CACHE_STORE=redis`, `CACHE_LIMITER=redis`, and `REDIS_CLIENT=predis`). Ensure every application instance and queue worker connects to the same protected Redis service.
 - Supervise production queue workers with Supervisor, systemd, or the deployment platform's equivalent and monitor them externally. The protected readiness endpoint detects Redis failures and stale audit symptoms but cannot prove that a worker supervisor or worker process is running without a separate heartbeat.
 - Keep `SANCTUM_EXPIRATION=1440` (1,440 minutes / 24 hours) or configure a shorter production lifetime. Sanctum rejects expired tokens automatically with `401 Unauthorized`.
-- Schedule `php artisan sanctum:prune-expired --hours=24` in production to remove token records that have been expired for at least 24 hours. This repository does not currently configure the production scheduler or cron entry; deployment must configure and monitor it. Pruning is database cleanup and is separate from Sanctum's automatic rejection of expired tokens.
+- The Laravel scheduler runs `php artisan sanctum:prune-expired --hours=24` daily to remove token records that have been expired for at least 24 hours. Production must still configure and monitor a server cron entry that runs `php artisan schedule:run` every minute, or an equivalent managed scheduler; this repository cannot configure the host cron. Pruning is database cleanup and is separate from Sanctum's automatic rejection of expired tokens.
 
 ## Common error formats and status codes
 
