@@ -1,37 +1,35 @@
-# AI Recommendation Service
+# Cas de test — Sécurité du service IA
 
-## Backend part
+## Objectif
 
-`app/Services/Ai/AiRecommendationService.php`
+Vérifier que le service IA ne contacte qu’un fournisseur explicitement autorisé et ne transmet que les signaux SEO nécessaires.
 
-## Real executable test file
+## Routes concernées
 
-`tests/Feature/AiRecommendationApiTest.php`
+`POST /api/audits/{audit}/recommendations`.
 
-## What is tested
+## Préconditions
 
-- Send audit data to the configured AI endpoint
-- Use the configured model
-- Handle success, invalid response, HTTP error, and connection error
-- Store the generated recommendation
-- Keep the API key out of responses and logs
+Disposer d’un audit terminé et simuler des configurations d’URL fournisseur, redirections, longueurs et réponses JSON.
 
-All AI requests are faked during PHPUnit tests.
+## Scénarios
 
-## Test type
+1. Accepter uniquement une URL HTTPS dont l’hôte correspond exactement à la liste autorisée.
+2. Refuser HTTP, les hôtes inattendus, les jokers et les configurations manquantes ou mal formées.
+3. Ne suivre aucune redirection du fournisseur.
+4. Vérifier que le prompt contient une sélection minimale de signaux et des URL assainies.
+5. Refuser une réponse trop grande avant lecture lorsque la longueur est fiable, puis pendant le streaming dans tous les autres cas.
+6. Appliquer la limite après décompression et limiter aussi la longueur finale du texte généré.
+7. Transformer les erreurs réseau, JSON et fournisseur en réponse générique sans clé ni réponse brute.
 
-- Feature
-- Integration
-- Security
-- Database
-- Mock
+## Résultat attendu
 
-## How to run
+Le service contacte exclusivement l’hôte HTTPS prévu, borne les données entrantes et sortantes et ne révèle aucun secret.
 
-```bash
-php artisan test
-```
+## Fichiers PHPUnit associés
 
-## Status
+- `tests/Feature/AiRecommendationApiTest.php`
 
-DONE
+## État actuel
+
+**Validé** — allowlist exacte, redirections, prompt et limites de taille couverts.

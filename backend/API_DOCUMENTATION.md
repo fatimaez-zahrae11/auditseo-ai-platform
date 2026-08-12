@@ -1,183 +1,53 @@
-# AuditSEO AI Platform API
+# API AuditSEO AI Platform
 
-This document describes the Laravel API contract used by the frontend application.
+## 1. Introduction
 
-## Quick reference
+AuditSEO AI Platform est un backend REST construit avec Laravel 12. L’API utilise :
 
-### Base URL
+- Laravel Sanctum avec jetons Bearer pour l’authentification ;
+- PostgreSQL comme base de données cible en développement réel et en production ;
+- Redis pour les files d’attente, le cache et la limitation de débit ;
+- des workers de file d’attente pour exécuter les audits SEO de manière asynchrone ;
+- Resend pour l’envoi des notifications de vérification d’adresse e-mail.
 
-Local development:
+URL de base typique : `https://api.example.com/api`.
 
-```text
-http://127.0.0.1:8000/api
-```
-
-All endpoint paths below are relative to this base URL. For example, `POST /register` means:
-
-```text
-POST http://127.0.0.1:8000/api/register
-```
-
-Endpoint paths such as `/audits/12` are relative to this API base URL. In contrast, response fields named `poll_url` already begin with `/api`, and pagination URL fields are absolute URLs. Do not blindly prepend `API_BASE_URL` to either form; the relevant sections below explain the recommended handling.
-
-### Required headers
-
-Send this header with every API request:
+Pour une route protégée :
 
 ```http
 Accept: application/json
+Authorization: Bearer <jeton-sanctum>
 ```
 
-For requests with a JSON body, also send:
+Les réponses sont en JSON. Les erreurs internes, raisons techniques sensibles, clés, jetons et traces complètes ne sont jamais destinés aux réponses publiques.
 
-```http
-Content-Type: application/json
-```
+## 2. Principes d’authentification
 
-Protected routes require the Sanctum token returned by a successful login after email verification:
+- L’inscription crée un utilisateur régulier (`role=user`), actif et non vérifié.
+- L’inscription n’émet aucun jeton API.
+- L’utilisateur doit vérifier son adresse e-mail avant de pouvoir se connecter.
+- La connexion est refusée à un compte inactif.
+- Une connexion réussie révoque les anciens jetons puis émet un nouveau jeton Sanctum avec expiration.
+- Si un compte est désactivé après émission d’un jeton, la prochaine requête authentifiée reçoit `403` et le jeton courant est révoqué lorsque cela est possible.
+- Le rôle et les champs de blocage ne peuvent pas être injectés par les routes publiques.
 
-```http
-Authorization: Bearer <token>
-```
+## 3. Authentification
 
-Never put the token in a URL or log it to the browser console.
+### `POST /api/register`
 
-### Authentication flow
+Authentification : aucune.
 
-1. Register with `POST /register`. This creates an unverified user, sends an email verification notification, and does **not** return a token.
-2. Show a "check your email" state and let the user open the signed verification URL from the email.
-3. After verification succeeds, ask the user to log in with `POST /login`.
-4. Read the `token` from the successful login response and only then store it in the frontend's authentication state/storage.
-5. Add `Authorization: Bearer <token>` to every protected request.
-6. Optionally use `GET /me` to restore or verify the current session.
-7. Call `POST /logout` to revoke the current token, or `POST /logout-all` to revoke every token, then remove the token from frontend storage.
-
-If login returns `403` with `Email verification is required before login.`, keep the user signed out and offer the verification-notification resend action. Registration alone never grants access to protected endpoints.
-
-Example frontend helper:
-
-```js
-const API_BASE_URL = 'http://127.0.0.1:8000/api';
-
-export async function apiRequest(path, { token, ...options } = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      Accept: 'application/json',
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw { status: response.status, data };
-  }
-
-  return data;
-}
-```
-
-## Endpoint summary
-
-| Method | Endpoint | Authentication | Purpose |
-| --- | --- | --- | --- |
-| `GET` | `/health` | No | Generic application health check |
-| `GET` | `/health/readiness` | Yes, verified | Check protected production readiness signals |
-| `POST` | `/register` | No | Create an unverified account and send a verification email |
-| `POST` | `/login` | No | Sign in a verified user and create a token |
-| `GET` | `/email/verify/{id}/{hash}` | Signed URL | Verify an email address |
-| `POST` | `/email/verification-notification` | No | Resend a verification email with a generic response |
-| `GET` | `/me` | Yes | Get the authenticated user |
-| `POST` | `/logout` | Yes | Revoke the current token |
-| `POST` | `/logout-all` | Yes | Revoke all tokens for the authenticated user |
-| `POST` | `/audits` | Yes | Queue a new SEO audit |
-| `GET` | `/audits` | Yes | List the user's audits with pagination |
-| `GET` | `/audits/{id}` | Yes | Get one owned audit |
-| `POST` | `/audits/{audit}/recommendations` | Yes | Generate and store an AI recommendation |
-| `GET` | `/audits/{audit}/recommendations` | Yes | Retrieve stored recommendations |
-| `GET` | `/dashboard` | Yes | Get user-specific summary statistics |
-
-## Health check
-
-`GET /api/health` is a public JSON endpoint for basic deployment health checks and uptime monitoring. It does not require authentication and intentionally returns no component or infrastructure details.
-
-When the application and database are reachable, it returns `200 OK`:
+Requête :
 
 ```json
 {
-  "status": "ok"
+  "name": "Alice Martin",
+  "email": "alice@example.com",
+  "password": "MotDePasse1"
 }
 ```
 
-If the database check fails, it returns `503 Service Unavailable` without identifying the failed dependency or exposing exception messages:
-
-```json
-{
-  "status": "degraded"
-}
-```
-
-### Readiness check
-
-`GET /api/health/readiness` is protected by Sanctum authentication and verified-email middleware. It is intended for authorized operations and monitoring clients, not anonymous public monitoring.
-
-The readiness check verifies database connectivity. It also pings the configured Redis connections when either the active queue connection or active cache store uses Redis. It reports audit-processing symptoms by counting pending audits older than the configured pending threshold, running audits older than the configured running threshold, and failed audits within the configured recent-failure window. Defaults are 10 minutes, 15 minutes, and 60 minutes respectively; deployments can set `HEALTH_STALE_PENDING_MINUTES`, `HEALTH_STALE_RUNNING_MINUTES`, and `HEALTH_RECENT_FAILED_MINUTES`.
-
-The 15-minute running threshold intentionally exceeds the complete retry lifecycle with margin. The audit job allows two 180-second attempts with a 30-second backoff, while a timed-out Redis job can remain reserved for the configured 300-second `retry_after` period before its next attempt. Because `started_at` is preserved across retries, the additional margin prevents a legitimate retry from being classified as stale too early.
-
-A ready response returns `200 OK` and only safe labels and counts:
-
-```json
-{
-  "status": "ready",
-  "checks": {
-    "database": "ok",
-    "redis": "ok",
-    "audit_queue": "ok"
-  },
-  "audit_counts": {
-    "stale_pending": 0,
-    "stale_running": 0,
-    "recent_failed": 0
-  }
-}
-```
-
-When neither the active queue nor cache configuration uses Redis, `checks.redis` is `not_required`. A failed required dependency or stale pending/running audit changes the response to `503 Service Unavailable` with `status` set to `not_ready`. If the database cannot be queried, `checks.audit_queue` is `not_checked` and audit counts are omitted. Responses never include connection names, hosts, ports, credentials, exception messages, stack traces, or internal paths.
-
-This endpoint does not prove that Supervisor, systemd, or a queue worker process is running because the application has no worker-heartbeat mechanism. Redis reachability and stale or failed audit counts detect symptoms only. Production must still supervise queue workers with Supervisor/systemd (or the deployment platform's equivalent) and use external monitoring for worker processes, queue depth, failures, and alerts.
-
-## Authentication
-
-### Register
-
-Creates an unverified user account and sends an email verification notification. It does **not** create or return a Sanctum token.
-
-- **Method:** `POST`
-- **URL:** `/register`
-- **Authentication:** Not required
-- **Rate limit:** 5 requests per minute
-
-Request body:
-
-```json
-{
-  "name": "TechGirl",
-  "email": "TechGirl@example.com",
-  "password": "Password1"
-}
-```
-
-Password requirements:
-
-- At least 8 characters
-- At least one uppercase letter
-- At least one number
-
-Successful response — `201 Created`:
+Succès — `201 Created` :
 
 ```json
 {
@@ -185,171 +55,71 @@ Successful response — `201 Created`:
 }
 ```
 
-After this response, show a "check your email" screen. Do not look for or store a token, and do not call protected routes. Email addresses are trimmed and stored in lowercase.
+La réponse ne contient ni utilisateur sensible ni jeton. Une notification de vérification est envoyée. Erreurs principales : `422` pour les données invalides ou une adresse déjà utilisée, `429` en cas de dépassement de débit.
 
-Common errors:
+### `POST /api/login`
 
-- `422 Validation Error` when fields are missing, the email is invalid/already registered, or the password is too weak.
-- `429 Too Many Requests` when the rate limit is exceeded.
+Authentification : aucune. Le compte doit être actif et son adresse e-mail vérifiée.
 
-### Login
-
-Authenticates an existing **verified** user and creates a new Sanctum token. The token expires after 1,440 minutes (24 hours). A successful login revokes all previously issued tokens for that user before creating the new token, so the API uses a single-session login policy. Email input is trimmed and lowercased, so login is not case-sensitive.
-
-- **Method:** `POST`
-- **URL:** `/login`
-- **Authentication:** Not required
-- **Rate limit:** 5 requests per minute for the same email and IP, plus 20 requests per minute per source IP
-
-Request body:
+Requête :
 
 ```json
 {
-  "email": "TechGirl@example.com",
-  "password": "Password1"
+  "email": "alice@example.com",
+  "password": "MotDePasse1"
 }
 ```
 
-Successful response — `200 OK`:
+Succès — `200 OK` :
 
 ```json
 {
   "message": "Login successful.",
   "user": {
-    "id": 1,
-    "name": "TechGirl",
-    "email": "techgirl@example.com",
-    "email_verified_at": "2026-07-19T10:05:00.000000Z",
-    "created_at": "2026-07-19T10:00:00.000000Z",
-    "updated_at": "2026-07-19T10:00:00.000000Z"
+    "id": 12,
+    "name": "Alice Martin",
+    "email": "alice@example.com",
+    "role": "user",
+    "is_active": true
   },
-  "token": "2|sanctum-token-value"
+  "token": "<jeton-affiché-une-seule-fois>"
 }
 ```
 
-Common errors:
+Avant de créer le nouveau jeton, l’API révoque tous les anciens jetons de l’utilisateur. Erreurs principales :
 
-- `422 Validation Error` for an invalid request or incorrect credentials. Incorrect credentials return:
+- `422 {"message":"Invalid credentials."}` pour un identifiant ou mot de passe incorrect, sans révéler si le compte existe ;
+- `403 {"message":"Email verification is required before login."}` si l’adresse n’est pas vérifiée ;
+- `403 {"message":"Account disabled"}` si le compte est inactif ;
+- `429` si la limite par adresse e-mail ou adresse IP est dépassée.
 
-```json
-{
-  "message": "Invalid credentials."
-}
-```
+### `GET /api/me`
 
-- `403 Forbidden` when the credentials are valid but the email has not been verified:
+Authentification : Bearer Sanctum et compte actif. La vérification e-mail n’est pas requise par cette route.
 
-```json
-{
-  "message": "Email verification is required before login."
-}
-```
-
-  Keep the user logged out, do not store a token, and offer the resend-verification action.
-- `429 Too Many Requests` when the rate limit is exceeded.
-
-### Verify email
-
-Verifies the user's email through the signed URL sent by the backend.
-
-- **Method:** `GET`
-- **URL:** `/email/verify/{id}/{hash}`
-- **Authentication:** Not required
-- **Query string:** The emailed URL includes Laravel signature and expiration parameters. The frontend must preserve the complete URL without changing its path or query string.
-- **Request body:** None
-
-The link is valid only when its signature is valid and its `{hash}` matches the user's email. Calling a valid link again is safe.
-
-Successful response — `200 OK`:
-
-```json
-{
-  "message": "Email verified successfully. You may now log in."
-}
-```
-
-Verification does not return a token. After success, direct the user to log in again.
-
-Common errors:
-
-- `403 Forbidden` when the signed link is invalid, modified, or expired:
-
-```json
-{
-  "message": "The verification link is invalid or has expired."
-}
-```
-
-- `404 Not Found` when the user referenced by the signed URL no longer exists.
-
-### Resend email verification notification
-
-Requests another verification email. The response is intentionally identical for unknown, verified, and unverified email addresses, so the frontend must not infer whether an account exists.
-
-- **Method:** `POST`
-- **URL:** `/email/verification-notification`
-- **Authentication:** Not required
-- **Rate limit:** 5 requests per minute for the same email and IP, plus 20 requests per minute per source IP
-
-Request body:
-
-```json
-{
-  "email": "techgirl@example.com"
-}
-```
-
-Successful generic response — `200 OK`:
-
-```json
-{
-  "message": "If the email is registered and unverified, a verification link has been sent."
-}
-```
-
-Common errors:
-
-- `422 Validation Error` when the email field is missing or invalid.
-- `429 Too Many Requests` when either resend rate limit is exceeded.
-
-### Get current user
-
-Returns the user associated with the supplied token.
-
-- **Method:** `GET`
-- **URL:** `/me`
-- **Authentication:** Required
-- **Request body:** None
-
-Successful response — `200 OK`:
+Succès — `200 OK` :
 
 ```json
 {
   "user": {
-    "id": 1,
-    "name": "TechGirl",
-    "email": "techgirl@example.com",
-    "email_verified_at": "2026-07-19T10:05:00.000000Z",
-    "created_at": "2026-07-19T10:00:00.000000Z",
-    "updated_at": "2026-07-19T10:00:00.000000Z"
+    "id": 12,
+    "name": "Alice Martin",
+    "email": "alice@example.com",
+    "role": "user",
+    "is_active": true
   }
 }
 ```
 
-Common error:
+Erreurs principales : `401` sans jeton valide ; `403 {"message":"Account disabled"}` si le compte a été désactivé.
 
-- `401 Unauthorized` when the token is missing, invalid, expired, or revoked.
+### `POST /api/logout`
 
-### Logout
+Authentification : Bearer Sanctum et compte actif.
 
-Revokes only the token used for the current request. Use logout-all when every token for the user must be revoked.
+Corps : aucun.
 
-- **Method:** `POST`
-- **URL:** `/logout`
-- **Authentication:** Required
-- **Request body:** None
-
-Successful response — `200 OK`:
+Succès — `200 OK` :
 
 ```json
 {
@@ -357,22 +127,15 @@ Successful response — `200 OK`:
 }
 ```
 
-After success, remove the token from frontend state/storage.
+Le jeton courant est révoqué. Erreurs principales : `401` sans jeton valide, `403` si le compte est désactivé.
 
-Common error:
+### `POST /api/logout-all`
 
-- `401 Unauthorized` when the token is missing, invalid, or already revoked.
+Authentification : Bearer Sanctum et compte actif.
 
-### Logout all sessions
+Corps : aucun.
 
-Revokes every Sanctum token belonging to the authenticated user, including tokens issued to other sessions.
-
-- **Method:** `POST`
-- **URL:** `/logout-all`
-- **Authentication:** Required
-- **Request body:** None
-
-Successful response — `200 OK`:
+Succès — `200 OK` :
 
 ```json
 {
@@ -380,843 +143,354 @@ Successful response — `200 OK`:
 }
 ```
 
-After success, remove the token from frontend state/storage on the current device. Other sessions will receive `401 Unauthorized` on their next protected request.
+Tous les jetons Sanctum de l’utilisateur sont révoqués. Erreurs principales : `401` sans jeton valide, `403` si le compte est désactivé.
 
-Common error:
+### `GET /api/email/verify/{id}/{hash}`
 
-- `401 Unauthorized` when the token is missing, invalid, or revoked.
+Authentification : aucune, mais l’URL doit porter une signature Laravel valide et non expirée.
 
-### Protected endpoint requirements
+Exemple :
 
-Send `Authorization: Bearer <token>` for every endpoint in this table:
+```http
+GET /api/email/verify/12/0123456789abcdef...?expires=...&signature=...
+```
 
-| Endpoint | Additional behavior |
-| --- | --- |
-| `GET /me` | Returns the authenticated user |
-| `GET /health/readiness` | Requires a verified email; returns safe global readiness signals |
-| `POST /logout` | Revokes the current token |
-| `POST /logout-all` | Revokes every token for the user |
-| `GET /dashboard` | Requires a verified email |
-| `POST /audits` | Requires a verified email; limited to 10 requests per hour |
-| `GET /audits` | Requires a verified email; returns paginated owned audits |
-| `GET /audits/{id}` | Requires a verified email; only returns an owned audit |
-| `POST /audits/{id}/recommendations` | Requires a verified email; limited to 5 requests per minute |
-| `GET /audits/{id}/recommendations` | Requires a verified email; only returns recommendations for an owned audit |
-
-Protected routes are generally limited to 30 requests per minute. More specific limits shown above replace that general limit for the applicable endpoint. A missing, expired, revoked, or invalid token returns `401 Unauthorized`.
-
-### Global application rate limits
-
-All public API endpoints, including the health check, registration, login, email verification, and verification resend endpoints, share a global limit of 120 requests per minute per source IP address. Stricter endpoint-specific login, registration, and verification limits still apply in addition to this shared budget.
-
-Authenticated API activity is also limited to 300 requests per minute per authenticated user ID, with an IP-address fallback when no authenticated identity is available. The existing 30-requests-per-minute limit on ordinary authenticated routes remains in effect, so the stricter limit wins. Audit creation remains limited to 10 requests per hour and AI recommendation generation remains limited to 5 requests per minute; both also remain inside the broader authenticated activity budget.
-
-Rate limits are shared across application instances through Laravel's configured rate-limiter cache store. This project uses the installed `predis/predis` package, so production should set `CACHE_STORE=redis`, `CACHE_LIMITER=redis`, and `REDIS_CLIENT=predis` with the configured `REDIS_*` connection values. Tests use the in-memory array cache and do not require a Redis server.
-
-Application-level rate limiting reduces abusive traffic reaching controllers and external services, but it is not a replacement for network-level DDoS protection. Production must also use Cloudflare, Nginx request controls, firewall restrictions, and a correctly configured trusted-proxy chain.
-
-## Audits
-
-All audit endpoints only expose audits owned by the authenticated user. Audit ownership is determined through the audit's domain.
-
-### Create an audit
-
-Crawls a public HTTP or HTTPS URL, calculates SEO scores, creates detected issues, and stores the audit.
-
-Audit creation is asynchronous. The endpoint validates and stores the request as a pending audit, dispatches the SEO audit job, and returns immediately. Crawling, scoring, issue generation, and final URL resolution run in the queue worker.
-
-- **Method:** `POST`
-- **URL:** `/audits`
-- **Authentication:** Required
-
-Request body:
+Succès — `200 OK` :
 
 ```json
 {
-  "url": "https://example.com/page"
+  "message": "Email verified successfully. You may now log in."
 }
 ```
 
-The URL must be valid, begin with `http://` or `https://`, and must not target an unsafe/private address. The crawler re-applies the public URL and DNS-pinning protections while processing redirects.
+Erreurs principales : `403` pour une signature, une expiration ou un hash incorrect ; `404` si l’utilisateur n’existe pas.
 
-Successful response — `202 Accepted`:
+### `POST /api/email/verification-notification`
+
+Authentification : aucune. La réponse est volontairement identique que l’adresse existe ou non.
+
+Requête :
+
+```json
+{
+  "email": "alice@example.com"
+}
+```
+
+Succès — `200 OK` :
+
+```json
+{
+  "message": "If the email is registered and unverified, a verification link has been sent."
+}
+```
+
+Erreurs principales : `422` si l’adresse est invalide, `429` si une limite anti-abus par e-mail ou IP est dépassée.
+
+## 4. Audits SEO de l’utilisateur
+
+Toutes ces routes exigent un jeton Sanctum, un compte actif et une adresse e-mail vérifiée. Les requêtes sont strictement limitées aux audits appartenant à l’utilisateur authentifié. Une ressource appartenant à un autre utilisateur est traitée comme introuvable.
+
+Les statuts possibles sont `pending`, `running`, `completed` et `failed`.
+
+### `POST /api/audits`
+
+Requête :
+
+```json
+{
+  "url": "https://www.example.com/"
+}
+```
+
+Succès — `202 Accepted` :
 
 ```json
 {
   "message": "Audit queued for processing.",
   "audit": {
-    "id": 12,
+    "id": 42,
     "status": "pending",
-    "requested_url": "https://example.com/page"
+    "requested_url": "https://www.example.com/"
   },
-  "poll_url": "/api/audits/12"
+  "poll_url": "/api/audits/42"
 }
 ```
 
-The POST response does not include scores, issues, or crawl data because processing has not completed. Poll the owned audit endpoint until it reaches a terminal status:
+L’audit n’est pas exécuté pendant la requête HTTP : un job est envoyé à la file et un worker le fait évoluer de `pending` vers `running`, puis `completed` ou `failed`. Erreurs principales : `401`, `403`, `422` pour une URL invalide ou dangereuse, `429` après 10 créations par heure, `503` si la mise en file échoue.
 
-```http
-GET /api/audits/12
-Authorization: Bearer <token>
-```
+### `GET /api/audits`
 
-The returned `poll_url` is relative to the backend origin and already includes `/api`. If the frontend helper uses an `API_BASE_URL` that ends in `/api`, call `apiRequest('/audits/' + data.audit.id, { token })` rather than concatenating that base with `poll_url`. Alternatively, resolve `poll_url` against the backend origin and request the resulting URL directly.
+Retourne uniquement les audits de l’utilisateur, du plus récent au plus ancien, avec une pagination fixe de 20 éléments.
 
-Audit statuses:
-
-- `pending`: stored and waiting for a worker.
-- `running`: the worker has started crawling and scoring.
-- `completed`: scores, `raw_data`, issues, and `final_url` are available.
-- `failed`: the audit could not be queued, or processing ended unsuccessfully after all automatic job attempts were exhausted. Internal failure details are not exposed in API responses.
-
-`requested_url` is the exact validated URL submitted for that audit. `final_url` is the final page URL reached after safe redirect handling and remains `null` until available. These audit-specific values are independent from the domain's host-level identity.
-
-Common errors:
-
-- `401 Unauthorized` when authentication is missing or invalid.
-- `422 Validation Error` when `url` is missing, invalid, does not use HTTP(S), or targets an unsafe address.
-- `429 Too Many Requests` when the audit creation rate limit is exceeded.
-- `503 Service Unavailable` when the queue backend cannot accept the audit job:
-
-```json
-{
-  "message": "Audit service is temporarily unavailable."
-}
-```
-
-When dispatch fails, the stored audit is marked `failed` instead of remaining permanently `pending`, and no crawl is started. Queue and exception details are not returned to the client. The frontend may ask the user to submit a new audit later.
-
-### Queue worker
-
-Production should use the Redis queue connection:
-
-```dotenv
-QUEUE_CONNECTION=redis
-REDIS_QUEUE_RETRY_AFTER=300
-```
-
-The Redis `retry_after` value must remain comfortably higher than the audit job timeout. The audit job currently has a 180-second timeout, so the documented 300-second reservation prevents another worker from receiving the same audit while the first worker is still allowed to run.
-
-Crawler and transport failures are converted to a generic `Audit processing failed.` exception before Laravel records a terminal failed job. The application does not attach the original exception or crawled URL query string to that exception, and its audit-job logs contain only the audit ID and exception class. Operational logging should likewise avoid recording full crawled URLs with query strings; this application behavior does not imply that production monitoring has been configured.
-
-At least one queue worker must be running for pending audits to progress:
-
-```bash
-php artisan queue:work
-```
-
-This documents the required worker command only; it does not imply that Supervisor, systemd, or another process manager is already configured.
-
-### List audits
-
-Returns summary records for the authenticated user's audits, ordered newest first, in pages of 20. Nested domains and full audit details are not included.
-
-- **Method:** `GET`
-- **URL:** `/audits`
-- **Authentication:** Required
-- **Query parameter:** Use `page` to request a page, for example `/audits?page=2`.
-- **Request body:** None
-
-Successful response — `200 OK`:
+Succès — `200 OK` :
 
 ```json
 {
   "audits": [
     {
-      "id": 12,
-      "domain_id": 4,
-      "requested_url": "https://example.com/page",
-      "final_url": "https://example.com/page",
+      "id": 42,
+      "requested_url": "https://www.example.com/",
+      "final_url": "https://example.com/",
       "status": "completed",
-      "global_score": 86,
-      "technical_score": 100,
-      "content_score": 75,
-      "links_score": 70,
-      "performance_score": 100,
-      "created_at": "2026-07-19T10:15:00.000000Z",
-      "updated_at": "2026-07-19T10:15:00.000000Z",
-      "started_at": "2026-07-19T10:15:01.000000Z",
-      "completed_at": "2026-07-19T10:15:05.000000Z",
-      "failed_at": null
-    }
-  ],
-  "pagination": {
-    "current_page": 1,
-    "last_page": 3,
-    "per_page": 20,
-    "total": 45,
-    "from": 1,
-    "to": 20,
-    "first_page_url": "https://api.example.com/api/audits?page=1",
-    "last_page_url": "https://api.example.com/api/audits?page=3",
-    "previous_page_url": null,
-    "next_page_url": "https://api.example.com/api/audits?page=2"
-  }
-}
-```
-
-Each item is a summary containing only `id`, `domain_id`, `requested_url`, `final_url`, `status`, the five score fields, `created_at`, `updated_at`, `started_at`, `completed_at`, and `failed_at`. The index does not include `raw_data`, `failure_reason`, the nested domain, issues, AI recommendations, or crawl/page details. Fetch `GET /audits/{id}` for the complete owned audit.
-
-The response always uses separate `audits` and `pagination` objects. Pagination URL fields are absolute backend URLs, so request them directly rather than prepending `API_BASE_URL`; when using the relative-path helper, pass `page` to `/audits` instead. `previous_page_url` is `null` on the first page, and `next_page_url` is `null` on the last page. When the user has no audits, `audits` is an empty array; `from` and `to` are `null`.
-
-Common error:
-
-- `401 Unauthorized` when authentication is missing or invalid.
-
-### Get one audit
-
-Returns one owned audit, including its domain and detected issues.
-
-The full professional SEO analysis is available in `audit.raw_data`. Detected audit issues are available in `audit.issues`. Unlike the summary index, this detail response retains the domain, requested/final URLs, scores, lifecycle fields, full `raw_data`, and issue details.
-
-- **Method:** `GET`
-- **URL:** `/audits/{id}`
-- **Authentication:** Required
-- **Path parameter:** Replace `{id}` with the audit ID.
-- **Request body:** None
-
-Example URL:
-
-```text
-/audits/12
-```
-
-Successful response — `200 OK`:
-
-```json
-{
-  "audit": {
-    "id": 12,
-    "domain_id": 4,
-    "requested_url": "https://example.com/page",
-    "final_url": "https://example.com/page",
-    "status": "completed",
-    "global_score": 86,
-    "technical_score": 100,
-    "content_score": 75,
-    "links_score": 70,
-    "performance_score": 100,
-    "raw_data": {
-      "title": "Example Page",
-      "meta_description": "Example description"
-    },
-    "created_at": "2026-07-19T10:15:00.000000Z",
-    "updated_at": "2026-07-19T10:15:00.000000Z",
-    "started_at": "2026-07-19T10:15:01.000000Z",
-    "completed_at": "2026-07-19T10:15:05.000000Z",
-    "failed_at": null,
-    "domain": {
-      "id": 4,
-      "user_id": 1,
-      "domain_name": "example.com",
-      "url": "https://example.com/page",
-      "created_at": "2026-07-19T10:15:00.000000Z",
-      "updated_at": "2026-07-19T10:15:00.000000Z"
-    },
-    "issues": []
-  }
-}
-```
-
-Common errors:
-
-- `401 Unauthorized` when authentication is missing or invalid.
-- `404 Not Found` when the audit does not exist or belongs to another user. Treat both cases the same in the frontend.
-
-## Professional SEO raw_data fields
-
-`raw_data` contains detailed evidence collected by the Laravel audit engine. Fields may be `null` or empty when a value is absent, a resource could not be fetched, or a check does not apply. Arrays are deliberately sampled and bounded to keep responses compact.
-
-### Technical SEO
-
-- `http_status_code`
-- `final_url`
-- `redirect_count`
-- `response_time_ms`
-- `page_size_bytes`
-- `canonical_url`
-- `canonical_matches_final_url`
-- `meta_robots`
-- `is_indexable`
-- `html_lang`
-- `viewport_found`
-- `h1_count`
-- `h2_count`
-- `h3_count`
-- `h4_count`
-- `h5_count`
-- `h6_count`
-
-These fields describe the final HTTP response, redirects, canonical/indexing signals, page language, responsive viewport, response timing/size, and heading counts.
-
-### Link SEO
-
-- `links_count`
-- `internal_links_count`
-- `external_links_count`
-- `nofollow_links_count`
-- `empty_anchor_links_count`
-- `generic_anchor_links_count`
-- `checked_links_count`
-- `broken_links_count`
-- `broken_links_sample`
-
-`broken_links_sample` is a small URL sample. Link checking is deliberately limited, so `checked_links_count` can be lower than `links_count`.
-
-### On-page Content SEO
-
-- `title`
-- `title_length`
-- `meta_description`
-- `meta_description_length`
-- `word_count`
-- `visible_text_sample`
-- `h1_texts`
-- `h2_texts`
-- `heading_structure`
-- `title_matches_h1`
-- `images_count`
-- `images_missing_alt_count`
-- `images_alt_missing_ratio`
-
-`heading_structure` is an ordered array such as `[{"tag":"h1","text":"Main title"}]`. `visible_text_sample` is truncated and is not the full page text.
-
-### Robots and Sitemap SEO
-
-- `robots_txt_found`
-- `robots_txt_status_code`
-- `robots_txt_allows_audited_url`
-- `robots_txt_sitemap_urls`
-- `robots_txt_disallow_rules_count`
-- `sitemap_xml_found`
-- `sitemap_xml_status_code`
-- `sitemap_xml_is_valid`
-- `sitemap_urls_count`
-- `sitemap_contains_audited_url`
-- `sitemap_https_urls_count`
-- `sitemap_non_https_urls_count`
-- `sitemap_checked_urls_count`
-- `sitemap_broken_urls_count`
-- `sitemap_broken_urls_sample`
-
-The response can also include `sitemap_urls_sample`, a bounded list used for site-wide quality details. Sitemap parsing and URL checking use safety limits.
-
-### Multi-page Crawl
-
-- `crawl_enabled`
-- `crawl_max_pages`
-- `crawl_max_depth`
-- `crawled_pages_count`
-- `discovered_internal_urls_count`
-- `crawled_pages`
-- `pages_with_http_errors_count`
-- `pages_with_missing_title_count`
-- `pages_with_missing_meta_description_count`
-- `pages_with_missing_h1_count`
-- `pages_with_noindex_count`
-- `pages_with_low_word_count_count`
-
-Each compact `crawled_pages` item can contain:
-
-```json
-{
-  "url": "https://example.com/about",
-  "status_code": 200,
-  "depth": 1,
-  "title": "About Example",
-  "meta_description": "About the Example organization.",
-  "h1": "About Example",
-  "word_count": 420,
-  "is_indexable": true,
-  "response_time_ms": 180,
-  "page_size_bytes": 24500,
-  "structured_data_found": true,
-  "schema_types": ["Organization"],
-  "canonical_url": "https://example.com/about",
-  "content_fingerprint": "4d8a3c135f01a872"
-}
-```
-
-The crawl is same-host and limit-based. These summaries do not contain full HTML or full page text.
-
-### Performance SEO
-
-- `content_type`
-- `content_encoding`
-- `compression_enabled`
-- `cache_control`
-- `cache_headers_present`
-- `server_header`
-- `html_size_kb`
-- `is_html_response`
-- `performance_warnings_count`
-
-`response_time_ms`, `page_size_bytes`, `viewport_found`, and `redirect_count` from Technical SEO are also used by performance checks.
-
-### Structured Data SEO
-
-- `structured_data_found`
-- `structured_data_formats`
-- `json_ld_count`
-- `microdata_found`
-- `rdfa_found`
-- `schema_types`
-- `structured_data_errors_count`
-- `structured_data_errors_sample`
-- `important_schema_types_found`
-- `recommended_schema_types_missing`
-
-Supported detection includes JSON-LD, Microdata, and RDFa. The API stores extracted type names and short validation errors, not complete JSON-LD documents.
-
-### Site-wide Quality
-
-- `duplicate_title_groups`
-- `duplicate_meta_description_groups`
-- `duplicate_h1_groups`
-- `duplicate_content_groups`
-- `duplicate_content_count`
-- `thin_content_pages_count`
-- `thin_content_pages_sample`
-- `canonical_conflicts_count`
-- `canonical_conflicts_sample`
-- `sitemap_orphan_urls_count`
-- `sitemap_orphan_urls_sample`
-- `site_quality_warnings_count`
-
-Title, meta-description, and H1 duplicate groups use this compact shape:
-
-```json
-{
-  "value": "Repeated page title",
-  "urls": ["https://example.com/a", "https://example.com/b"],
-  "count": 2
-}
-```
-
-Content duplicate groups replace `value` with a short `fingerprint`. Group URL samples, thin-page samples, canonical-conflict samples, and sitemap-orphan samples are limited. A thin-page sample contains `url` and `word_count`; a canonical-conflict sample contains `url` and `canonical_url`.
-
-### Completed audit detail example
-
-This is a shortened `GET /audits/{id}` response after queue processing has completed. POST `/audits` does not return this data; it returns `202 Accepted` with the pending audit summary and polling URL documented above.
-
-```json
-{
-  "audit": {
-    "id": 12,
-    "status": "completed",
-    "global_score": 82,
-    "technical_score": 88,
-    "content_score": 72,
-    "links_score": 78,
-    "performance_score": 90,
-    "raw_data": {
-      "http_status_code": 200,
-      "final_url": "https://example.com/page",
-      "title": "Example Page",
-      "word_count": 240,
-      "internal_links_count": 8,
-      "broken_links_count": 1,
-      "compression_enabled": true,
-      "structured_data_found": true,
-      "schema_types": ["Organization", "WebSite"],
-      "crawled_pages_count": 4,
-      "thin_content_pages_count": 1,
-      "duplicate_content_count": 0,
-      "canonical_conflicts_count": 0
-    },
-    "issues": [
-      {
-        "category": "content",
-        "title": "Thin content pages found",
-        "severity": "important",
-        "description": "1 crawled page(s) contain fewer than 300 visible words.",
-        "recommendation": "Expand thin pages with useful, original information or consolidate pages that do not warrant separate URLs."
-      }
-    ]
-  }
-}
-```
-
-For `GET /audits/{id}`, the same scores, professional `raw_data`, and audit issue objects are nested inside `audit` as `audit.raw_data` and `audit.issues`.
-
-### Audit issue categories and severities
-
-Audit issue `category` values are:
-
-- `technical`
-- `content`
-- `links`
-- `indexability`
-- `accessibility`
-- `performance`
-- `structured_data`
-
-Audit issue `severity` values are:
-
-- `minor` — optimization or quality improvement
-- `important` — meaningful SEO problem that should be prioritized
-- `critical` — severe accessibility, indexability, technical, or performance problem
-
-## AI recommendations
-
-The frontend must never call the configured AI provider directly. It calls Laravel, and Laravel safely handles provider credentials and stores successful recommendations. The backend limits provider output tokens, downloaded response bytes, and stored `generated_text` length. A response that is invalid or exceeds those security limits is rejected without storing a partial recommendation.
-
-### Generate an AI recommendation
-
-Requests a new recommendation for an existing owned, completed audit and stores the successful result. AI recommendation generation remains synchronous: once the audit is completed, this request calls the configured provider and waits for its response.
-
-The frontend must poll `GET /audits/{id}` until the audit status is `completed` before enabling recommendation generation. Audits that are still `pending` or `running`, or that ended as `failed`, are not sent to the AI provider.
-
-The provider receives a minimized, bounded SEO summary rather than the complete crawl `raw_data`. The summary is limited to audit scores, selected numeric/boolean SEO signals, high-level issue category/title/severity values, and a small number of sanitized URL samples. Full HTML, visible page text, headers, cookies, response bodies, issue descriptions, issue recommendations, and arbitrary crawler/debug fields are excluded. Every included HTTP(S) URL has its query string and fragment removed before transmission, including audited, canonical, sitemap, broken-link, issue-title, and sampled page URLs.
-
-- **Method:** `POST`
-- **URL:** `/audits/{audit}/recommendations`
-- **Authentication:** Required
-- **Path parameter:** Replace `{audit}` with the audit ID.
-- **Request body:** None
-- **Rate limit:** 5 requests per minute
-
-Example URL:
-
-```text
-/audits/12/recommendations
-```
-
-Successful response — `201 Created`:
-
-```json
-{
-  "message": "AI recommendation generated successfully.",
-  "recommendation": {
-    "id": 8,
-    "audit_id": 12,
-    "provider": "dahl",
-    "prompt_summary": "SEO recommendations for audit #12 with 3 detected issue(s).",
-    "generated_text": "Prioritize adding a descriptive page title, then improve image alternative text and internal linking.",
-    "created_at": "2026-07-19T10:20:00.000000Z",
-    "updated_at": "2026-07-19T10:20:00.000000Z"
-  }
-}
-```
-
-`recommendation.provider` is the backend's configured provider label. Treat it as display metadata and do not hardcode frontend behavior to a specific provider value. `recommendation.generated_text` is stored and returned as an ordinary string. Treat it as untrusted provider-generated content. If the frontend renders it as Markdown or HTML, it must use an appropriate sanitizer and must not inject the value directly into the DOM as trusted HTML.
-
-Common errors:
-
-- `401 Unauthorized` when authentication is missing or invalid.
-- `404 Not Found` when the audit does not exist or belongs to another user.
-- `409 Conflict` when the audit is not completed:
-
-```json
-{
-  "message": "AI recommendations are only available after the audit is completed."
-}
-```
-
-- `429 Too Many Requests` when the generation rate limit is exceeded.
-- `502 AI service unavailable` when the external AI request fails:
-
-```json
-{
-  "message": "AI recommendation service is unavailable."
-}
-```
-
-Provider transport errors, invalid responses, and security-limit failures all use this generic `502` response. The frontend must not expect or display raw provider errors or internal provider details. Do not attempt to obtain, send, or display an AI provider API key in the frontend.
-
-### Get stored AI recommendations
-
-Returns a paginated history of recommendations already stored for an owned audit. This endpoint does **not** call the AI provider and does not generate a new recommendation. Results are ordered newest first.
-
-- **Method:** `GET`
-- **URL:** `/audits/{audit}/recommendations`
-- **Authentication:** Required
-- **Path parameter:** Replace `{audit}` with the audit ID.
-- **Query parameters:** `page` selects the page. `per_page` selects the page size; the default is `20` and the maximum is `50`.
-- **Request body:** None
-
-Successful response — `200 OK`:
-
-```json
-{
-  "recommendations": [
-    {
-      "id": 8,
-      "audit_id": 12,
-      "provider": "dahl",
-      "prompt_summary": "SEO recommendations for audit #12 with 3 detected issue(s).",
-      "generated_text": "Prioritize adding a descriptive page title, then improve image alternative text and internal linking.",
-      "created_at": "2026-07-19T10:20:00.000000Z",
-      "updated_at": "2026-07-19T10:20:00.000000Z"
+      "global_score": 84,
+      "technical_score": 80,
+      "content_score": 86,
+      "links_score": 81,
+      "performance_score": 89,
+      "created_at": "2026-08-12T10:00:00.000000Z"
     }
   ],
   "pagination": {
     "current_page": 1,
     "last_page": 1,
     "per_page": 20,
-    "total": 1,
-    "from": 1,
-    "to": 1,
-    "next_page_url": null,
-    "previous_page_url": null
+    "total": 1
   }
 }
 ```
 
-The frontend must consume both the `recommendations` array and the `pagination` object rather than expecting the endpoint to return the complete history in one array. Pagination URL fields are absolute backend URLs and can be requested directly; when using the relative-path helper, pass `page` to `/audits/{audit}/recommendations` instead. When no recommendation has been generated, `recommendations` is an empty array, `total` is `0`, and `from` and `to` are `null`. Treat every stored `generated_text` value as untrusted provider output and sanitize any Markdown/HTML rendering; do not regenerate merely to display prior results.
+Erreurs principales : `401`, `403`, `429`.
 
-Common errors:
+### `GET /api/audits/{audit}`
 
-- `401 Unauthorized` when authentication is missing or invalid.
-- `404 Not Found` when the audit does not exist or belongs to another user.
+Retourne le détail, le domaine et les problèmes détectés pour un audit appartenant à l’utilisateur.
 
-## Dashboard
-
-### Get dashboard statistics
-
-Returns summary information calculated only from the authenticated user's domains, audits, issues, and recommendations.
-
-- **Method:** `GET`
-- **URL:** `/dashboard`
-- **Authentication:** Required
-- **Request body:** None
-
-Successful response — `200 OK`:
+Succès — `200 OK` :
 
 ```json
 {
-  "total_audits": 5,
-  "completed_audits": 3,
+  "audit": {
+    "id": 42,
+    "status": "completed",
+    "requested_url": "https://www.example.com/",
+    "final_url": "https://example.com/",
+    "issues": []
+  }
+}
+```
+
+Erreurs principales : `401`, `403`, `404` si l’audit n’existe pas ou appartient à un autre utilisateur. Les raisons techniques d’échec ne sont pas exposées par l’API normale.
+
+### `GET /api/dashboard`
+
+Retourne des agrégats calculés uniquement sur les données de l’utilisateur authentifié : nombre total d’audits, ventilation par statut, moyenne des scores terminés, problèmes, recommandations et derniers audits.
+
+Succès — `200 OK` :
+
+```json
+{
+  "total_audits": 8,
+  "completed_audits": 5,
   "pending_audits": 1,
-  "running_audits": 0,
+  "running_audits": 1,
   "failed_audits": 1,
   "average_global_score": 78,
   "total_issues": 14,
   "total_ai_recommendations": 3,
-  "latest_audit": {
-    "id": 12,
-    "domain_id": 4,
-    "status": "pending",
-    "global_score": 0,
-    "technical_score": 0,
-    "content_score": 0,
-    "links_score": 0,
-    "performance_score": 0,
-    "raw_data": null,
-    "created_at": "2026-07-19T10:15:00.000000Z",
-    "updated_at": "2026-07-19T10:15:00.000000Z",
-    "domain": {
-      "id": 4,
-      "user_id": 1,
-      "domain_name": "example.com",
-      "url": "https://example.com/page",
-      "created_at": "2026-07-19T10:15:00.000000Z",
-      "updated_at": "2026-07-19T10:15:00.000000Z"
-    }
-  },
-  "latest_completed_audit": {
-    "id": 11,
-    "domain_id": 4,
-    "status": "completed",
-    "global_score": 86,
-    "technical_score": 100,
-    "content_score": 75,
-    "links_score": 70,
-    "performance_score": 100,
-    "raw_data": {
-      "title": "Example Page",
-      "meta_description": "Example description"
-    },
-    "created_at": "2026-07-19T10:15:00.000000Z",
-    "updated_at": "2026-07-19T10:15:00.000000Z",
-    "domain": {
-      "id": 4,
-      "user_id": 1,
-      "domain_name": "example.com",
-      "url": "https://example.com/page",
-      "created_at": "2026-07-19T10:15:00.000000Z",
-      "updated_at": "2026-07-19T10:15:00.000000Z"
-    }
+  "latest_audit": {},
+  "latest_completed_audit": {}
+}
+```
+
+Erreurs principales : `401`, `403`, `429`.
+
+## 5. Recommandations IA
+
+Ces routes exigent l’authentification, un compte actif, une adresse vérifiée et la propriété de l’audit.
+
+### `POST /api/audits/{audit}/recommendations`
+
+Corps : aucun. L’audit doit avoir le statut `completed`.
+
+Succès — `201 Created` :
+
+```json
+{
+  "message": "AI recommendation generated successfully.",
+  "recommendation": {
+    "id": 9,
+    "audit_id": 42,
+    "generated_text": "Priorisez les corrections techniques...",
+    "created_at": "2026-08-12T10:15:00.000000Z"
   }
 }
 ```
 
-`total_audits` counts every requested audit. The four status fields partition that total into `completed_audits`, `pending_audits`, `running_audits`, and `failed_audits`.
+Erreurs principales : `401`, `403`, `404` pour un audit absent ou non possédé, `409` si l’audit n’est pas terminé, `429` après 5 générations par minute, `502` si le fournisseur IA échoue. Les détails fournisseur et la clé API ne sont jamais renvoyés.
 
-`average_global_score` is calculated only from audits whose status is `completed` and is rounded to the nearest whole number. Pending, running, and failed audit scores are excluded. If the user has audits but none are completed, the average remains `0` for backward compatibility.
+### `GET /api/audits/{audit}/recommendations`
 
-`latest_audit` is the most recently requested audit regardless of status, so the frontend can immediately display newly queued work. `latest_completed_audit` is the most recent completed audit and is `null` when none exists. Poll pending or running audits through `GET /audits/{id}` until they reach a terminal status.
+Paramètres : `page` et `per_page`. La taille par défaut est 20 et le maximum est 50.
 
-If the user has no audits, the response is:
-
-```json
-{
-  "total_audits": 0,
-  "completed_audits": 0,
-  "pending_audits": 0,
-  "running_audits": 0,
-  "failed_audits": 0,
-  "average_global_score": 0,
-  "total_issues": 0,
-  "total_ai_recommendations": 0,
-  "latest_audit": null,
-  "latest_completed_audit": null
-}
-```
-
-Common error:
-
-- `401 Unauthorized` when authentication is missing or invalid.
-
-## Production and frontend environment
-
-- Configure the frontend API base URL to the deployed backend API URL, such as `https://api.example.com/api`. Do not ship the local `http://127.0.0.1:8000/api` value in a production frontend.
-- Set backend `CORS_ALLOWED_ORIGINS` to include the exact production frontend origin, including its scheme and any non-default port. Do not use a wildcard origin for authenticated frontend traffic.
-- Set backend `APP_URL` to the public HTTPS backend URL used to generate signed email-verification links.
-- Set `MAIL_MAILER=resend` in the production backend environment. Put the Resend API key value in `RESEND_API_KEY` only in the real production `.env`; keep the committed `.env.example` placeholder empty.
-- Verify the production sending domain in Resend before sending production email. Configure the DNS records supplied by Resend in Cloudflare (or the domain's DNS provider), and wait for Resend to confirm verification.
-- Set `MAIL_FROM_ADDRESS` to an address on that verified domain and set `MAIL_FROM_NAME` to the desired sender name.
-- Production verification emails must contain HTTPS production URLs. A link generated for `localhost` or `127.0.0.1` will not provide a usable production verification flow.
-- Keep the complete signed verification URL unchanged when routing the user through the frontend or backend; modifying its signed parameters invalidates it.
-- Use Redis through the installed Predis client for queues, shared application cache, and rate-limit counters in production (`QUEUE_CONNECTION=redis`, `CACHE_STORE=redis`, `CACHE_LIMITER=redis`, and `REDIS_CLIENT=predis`). Ensure every application instance and queue worker connects to the same protected Redis service.
-- Supervise production queue workers with Supervisor, systemd, or the deployment platform's equivalent and monitor them externally. The protected readiness endpoint detects Redis failures and stale audit symptoms but cannot prove that a worker supervisor or worker process is running without a separate heartbeat.
-- Keep `SANCTUM_EXPIRATION=1440` (1,440 minutes / 24 hours) or configure a shorter production lifetime. Sanctum rejects expired tokens automatically with `401 Unauthorized`.
-- The Laravel scheduler runs `php artisan sanctum:prune-expired --hours=24` daily to remove token records that have been expired for at least 24 hours. Production must still configure and monitor a server cron entry that runs `php artisan schedule:run` every minute, or an equivalent managed scheduler; this repository cannot configure the host cron. Pruning is database cleanup and is separate from Sanctum's automatic rejection of expired tokens.
-
-## Common error formats and status codes
-
-Always branch on the HTTP status (`response.status`), not only the response message.
-
-### `200 OK`
-
-The request completed successfully. Used by login, current-user, logout, list/detail, stored recommendations, and dashboard endpoints.
-
-### `201 Created`
-
-A resource was created successfully. Used by registration and AI recommendation generation.
-
-### `202 Accepted`
-
-The audit request was validated, stored as `pending`, and dispatched for background processing. Poll the response's `poll_url` until the audit becomes `completed` or `failed`.
-
-### `401 Unauthorized`
-
-The protected request has no valid Sanctum token.
+Succès — `200 OK` :
 
 ```json
 {
-  "message": "Unauthenticated."
-}
-```
-
-The frontend should clear an invalid token and redirect the user to sign in.
-
-### `403 Forbidden`
-
-Login returns `403` when valid credentials belong to an unverified user. In that case, keep the user signed out and offer verification resend. Other `403` responses indicate that an operation is forbidden. Ownership-protected audit endpoints intentionally return `404` instead of revealing whether another user's resource exists.
-
-### `404 Not Found`
-
-The requested resource does not exist or is not owned by the authenticated user. Do not use the response to infer whether another user's resource exists.
-
-### `409 Conflict`
-
-AI recommendation generation returns `409` when the owned audit is not `completed`, including when its status is `pending`, `running`, or `failed`:
-
-```json
-{
-  "message": "AI recommendations are only available after the audit is completed."
-}
-```
-
-Keep the AI action disabled unless `audit.status === "completed"`. Continue polling pending/running audits; show the failed state without offering AI generation for failed audits.
-
-### `422 Validation Error`
-
-Laravel validation errors normally use this shape:
-
-```json
-{
-  "message": "The email field is required. (and 1 more error)",
-  "errors": {
-    "email": [
-      "The email field is required."
-    ],
-    "password": [
-      "The password field is required."
-    ]
+  "recommendations": [
+    {
+      "id": 9,
+      "audit_id": 42,
+      "generated_text": "Priorisez les corrections techniques..."
+    }
+  ],
+  "pagination": {
+    "current_page": 1,
+    "last_page": 1,
+    "per_page": 20,
+    "total": 1
   }
 }
 ```
 
-Render messages from `errors[field]` beside the matching form control. Login can also return `422` with only `{ "message": "Invalid credentials." }`, so handle both shapes.
+L’historique est paginé et trié du plus récent au plus ancien. Erreurs principales : `401`, `403`, `404`, `429`.
 
-### `429 Too Many Requests`
+## 6. Santé de l’application
 
-The client exceeded a global or endpoint-specific route rate limit. Public API traffic has a shared 120-requests-per-minute per-IP budget, and authenticated activity has a shared 300-requests-per-minute per-user budget. Registration and AI recommendation generation are limited to 5 requests per minute, audit creation is limited to 10 requests per hour, and ordinary authenticated routes retain their 30-requests-per-minute limit. Login and verification resend also have email-and-IP and IP-only limits, so rotating email addresses does not bypass throttling. Disable repeated submission and ask the user to retry later.
+### `GET /api/health`
 
-### `502 AI service unavailable`
+Authentification : aucune. Cette sonde publique reste générique.
 
-AI recommendation generation could not obtain a valid provider response:
-
-```json
-{
-  "message": "AI recommendation service is unavailable."
-}
-```
-
-Keep the current audit page usable, show a retry message, and avoid tight automatic retry loops.
-
-### `503 Service Unavailable`
-
-Audit creation returns `503` when the queue backend cannot accept the job:
+Succès — `200 OK` :
 
 ```json
 {
-  "message": "Audit service is temporarily unavailable."
+  "status": "ok"
 }
 ```
 
-The public health and protected readiness endpoints can also return `503` using their documented safe status objects. Keep the current UI usable, show a temporary-service message, and avoid tight retry or polling loops. Do not expect dependency names or internal exception details.
+Si la base n’est pas disponible, la réponse est `503` avec `{"status":"degraded"}` sans détail d’exception ni secret.
 
-## Frontend integration checklist
+### `GET /api/health/readiness`
 
-### Configuration and transport
+Authentification : Bearer Sanctum, compte actif et adresse vérifiée.
 
-- Set one environment-specific API base URL ending in `/api`; use `http://127.0.0.1:8000/api` only for local development.
-- Send `Accept: application/json` on every request and `Content-Type: application/json` when sending JSON.
-- Copyable request and response bodies are provided in the Register, Login, Create an audit, Get one audit, AI recommendations, and Dashboard sections above.
+Cette sonde vérifie de manière sûre la base, Redis lorsque configuré, et l’état de la file d’audits. Elle peut signaler des audits `pending` ou `running` obsolètes sans exposer de DSN, mot de passe ou exception brute.
 
-### Authentication
+Succès : `200` avec `status=ready`. Indisponibilité : `503` avec `status=not_ready`. Erreurs d’accès : `401` ou `403`.
 
-- Register, then show a "check your email" state. Registration returns `201` with a message but no token.
-- Preserve the complete signed verification URL from the email. After verification succeeds, send the user to login.
-- Treat the login `403` email-verification response separately from invalid credentials and offer verification resend.
-- Store the token only from a successful login and send `Authorization: Bearer <token>` on every protected request.
-- Remove the token after logout, logout-all, or `401 Unauthorized`; logout-all invalidates other sessions too.
+## 7. API d’administration
 
-### Audits and dashboard
+Les 13 routes ci-dessous sont regroupées sous `/api/admin` et utilisent exactement, dans cet ordre :
 
-- Create an audit with `POST /audits`. Expect `202 Accepted`, an initial `pending` summary, and `poll_url`; never expect completed scores or issues from this response.
-- Poll until `audit.status` becomes `completed` or `failed`. The returned `poll_url` already contains `/api`; resolve it against the backend origin, or use `/audits/{id}` with an API base URL that already ends in `/api`. Show progress for `pending` and `running`, and stop polling at either terminal status.
-- Use `GET /audits` only for paginated summary cards/rows. Fetch `GET /audits/{id}` for `raw_data`, issues, domain data, and complete lifecycle fields.
-- Use `GET /dashboard` for owned status counts and summary widgets. `average_global_score` includes completed audits only; distinguish `latest_audit` from `latest_completed_audit`.
+```text
+auth:sanctum -> active -> admin
+```
 
-### AI recommendations
+Elles permettent des vues globales uniquement parce qu’elles sont réservées aux administrateurs actifs authentifiés. Une requête non authentifiée reçoit `401`, un utilisateur régulier ou un administrateur inactif reçoit `403`.
 
-- Enable recommendation generation only when `audit.status === "completed"`; pending, running, and failed audits return `409 Conflict`.
-- `POST /audits/{audit}/recommendations` is synchronous. Show a loading state, prevent duplicate submission, and consume the returned `201` recommendation.
-- Use the paginated `GET /audits/{audit}/recommendations` endpoint to display stored history without calling the provider again.
-- Treat `provider` as configurable metadata. Treat every `generated_text` value as untrusted and sanitize any Markdown/HTML rendering.
-- Call only the Laravel API. Never request, store, or send an AI provider key from the frontend.
+Les listes utilisent une pagination et des plafonds sûrs (`per_page` généralement 20 par défaut, maximum 100). Les relations sont préchargées ou agrégées pour éviter les requêtes N+1. Les réponses sont façonnées et expurgées.
 
-### Error handling
+| Méthode et route | Fonction | Paramètres principaux |
+|---|---|---|
+| `GET /api/admin/action-logs` | Journal paginé des actions administratives sensibles | `admin_user_id`, `action`, `target_type`, `target_id`, `created_from`, `created_to`, `page`, `per_page` |
+| `GET /api/admin/analytics/active-users` | Utilisateurs ayant eu une activité API dans les 15 dernières minutes ; ce n’est pas une présence temps réel | `page`, `per_page` |
+| `GET /api/admin/analytics/heavy-users` | Classement des utilisateurs par usage | `from`, `to`, `page`, `per_page` |
+| `GET /api/admin/analytics/overview` | Totaux utilisateurs, audits, recommandations et requêtes | aucun |
+| `GET /api/admin/audits` | Audits de tous les utilisateurs | `status`, `user_id`, `search`, `created_from`, `created_to`, `page`, `per_page` |
+| `GET /api/admin/recommendations` | Recommandations de tous les utilisateurs, avec aperçu limité à 300 caractères | `user_id`, `audit_id`, `search`, `created_from`, `created_to`, `page`, `per_page` |
+| `GET /api/admin/system/health-detailed` | État opérationnel détaillé mais expurgé | aucun |
+| `GET /api/admin/system/logs` | Dernières lignes expurgées de `storage/logs/laravel.log` uniquement | `lines`, défaut 100, maximum 200 |
+| `GET /api/admin/users` | Liste des utilisateurs et compteurs d’audits/recommandations | `page`, `per_page` |
+| `POST /api/admin/users` | Création d’un utilisateur régulier à vérifier | `name`, `email`, `password` |
+| `GET /api/admin/users/{user}/activity` | Dernière activité, dernière IP, volumes et 10 routes récentes | aucun |
+| `PATCH /api/admin/users/{user}/deactivate` | Désactivation, métadonnées de blocage et révocation de tous les jetons | `blocked_reason` facultatif |
+| `PATCH /api/admin/users/{user}/reactivate` | Réactivation et nettoyage des métadonnées de blocage | aucun |
 
-- `401`: clear invalid authentication and send the user to login.
-- `403`: handle unverified-login and invalid/expired verification-link cases without treating them as `401`.
-- `404`: show not found; do not infer whether another user owns the identifier.
-- `409`: keep AI generation disabled until the audit is completed.
-- `422`: render field errors when `errors` exists; login failures can contain only a message.
-- `429`: stop repeated submission and ask the user to retry later.
-- `502`: keep the audit usable and show a generic AI-service error.
-- `503`: show a temporary-service error and avoid aggressive automatic retries.
+Exemple de création administrative :
+
+```json
+{
+  "name": "Nouvel utilisateur",
+  "email": "nouveau@example.com",
+  "password": "MotDePasse1",
+  "role": "admin"
+}
+```
+
+Le champ `role` est rejeté par la validation : l’API ne peut créer que `role=user`. La promotion passe exclusivement par la console :
+
+```bash
+php artisan make:admin admin@example.com
+```
+
+La désactivation de son propre compte est bloquée. La désactivation du dernier administrateur actif est également bloquée. La réactivation conserve le rôle et n’émet aucun jeton.
+
+Les actions sensibles suivantes sont enregistrées dans `admin_action_logs` : création, désactivation et réactivation d’un utilisateur, consultation des journaux système et consultation de la santé détaillée. Les métadonnées sensibles sont supprimées avant stockage, et une panne de journalisation ne casse pas l’action principale.
+
+## 8. Codes d’erreur courants
+
+| Code | Signification |
+|---|---|
+| `401` | Jeton absent, invalide ou expiré |
+| `403` | Compte inactif, e-mail non vérifié ou droits insuffisants |
+| `404` | Route ou ressource absente ; également utilisé pour protéger la propriété des ressources |
+| `409` | État incompatible, notamment audit non terminé pour une recommandation |
+| `422` | Échec de validation ou identifiants invalides |
+| `429` | Limite de débit dépassée |
+| `502` | Fournisseur IA indisponible, avec message générique |
+| `503` | Dépendance ou service interne indisponible, sans détail sensible |
+
+## 9. Sécurité
+
+### Authentification et limitation de débit
+
+- Jetons Sanctum Bearer avec expiration et révocation.
+- Vérification e-mail obligatoire avant connexion et accès aux fonctionnalités métier.
+- Comptes inactifs refusés à la connexion et bloqués sur leurs anciens jetons.
+- Limiteurs globaux et spécialisés pour les routes publiques, la connexion, l’inscription, le renvoi de vérification, les audits et les recommandations IA.
+- Messages de connexion uniformes et vérification de mot de passe factice pour réduire l’énumération des comptes.
+
+### Protection du crawler SEO
+
+- Seules les URL HTTP(S) autorisées par la politique publique sont acceptées.
+- Blocage des adresses locales, privées, link-local et autres plages spéciales IPv4/IPv6.
+- Refus des identifiants intégrés aux URL et des ports non autorisés.
+- Résolution DNS contrôlée et épinglage DNS vers l’adresse validée.
+- Revalidation de chaque redirection et des ressources secondaires.
+- Limites de taille appliquées aux réponses HTML, compressées, robots, sitemaps et liens vérifiés.
+- Échec fermé si l’épinglage DNS sécurisé n’est pas disponible.
+
+### Fournisseur IA
+
+- URL HTTPS obligatoire et liste d’hôtes exacts autorisés.
+- Redirections fournisseur désactivées.
+- Prompt réduit aux signaux SEO nécessaires et URL assainies.
+- Limites sur les octets de réponse et la longueur du texte généré.
+- Erreurs JSON, réseau et fournisseur transformées en réponses génériques.
+- Clés et réponses brutes du fournisseur absentes des réponses et journaux d’usage.
+
+### Journaux et confidentialité
+
+- `access_logs` stocke uniquement utilisateur éventuel, IP, méthode, chemin sans query string, code HTTP, user-agent borné et date.
+- Aucun corps, mot de passe, cookie, en-tête Authorization, jeton, clé API ou valeur `.env` n’est stocké.
+- `admin_action_logs` ne reçoit que des métadonnées explicitement choisies ; les clés sensibles sont supprimées récursivement.
+- Les échecs de journalisation sont isolés et ne modifient pas la réponse métier.
+- La lecture administrative du journal Laravel est bornée à un fichier fixe, limitée et expurgée.
+
+### Resend et dépendances
+
+- Le webhook entrant inutilisé `POST /resend/webhook` est désactivé et retourne `404`.
+- Le transport sortant Resend reste disponible pour les e-mails de vérification.
+- `league/commonmark` est verrouillé en version `2.10.0`.
+- `composer audit` ne signale actuellement aucun avis de sécurité.
+
+## 10. Diagnostics vérifiés
+
+État vérifié après les correctifs de dépendance et de webhook :
+
+```text
+php artisan test
+343 tests réussis, 3677 assertions
+
+composer audit
+Aucun avis de sécurité
+
+php artisan route:list
+33 routes
+
+php artisan route:list --path=api/admin
+13 routes administratives
+```
+
+Ces nombres décrivent l’état de référence vérifié. Toute évolution de routes ou de tests doit mettre cette section à jour.

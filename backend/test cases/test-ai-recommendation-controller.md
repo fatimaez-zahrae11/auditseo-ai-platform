@@ -1,36 +1,38 @@
-# AI Recommendation API
+# Cas de test — API de recommandations IA
 
-## Backend part
+## Objectif
 
-`app/Http/Controllers/Api/AiRecommendationController.php`
+Vérifier les contrôles d’accès, l’état préalable de l’audit, la pagination et la gestion sûre des erreurs du fournisseur.
 
-## Real executable test file
+## Routes concernées
 
-`tests/Feature/AiRecommendationApiTest.php`
+`POST /api/audits/{audit}/recommendations`, `GET /api/audits/{audit}/recommendations`, `GET /api/admin/recommendations`.
 
-## What is tested
+## Préconditions
 
-- Generate and store a recommendation
-- Retrieve stored recommendations newest first
-- Require authentication and audit ownership
-- Avoid an AI call when reading stored data
-- Return safe errors when the AI service fails
-- Limit recommendation generation requests
+Créer deux utilisateurs avec des audits `pending`, `running`, `failed` et `completed`, puis simuler les réponses du fournisseur IA.
 
-## Test type
+## Scénarios
 
-- Feature
-- Integration
-- Security
-- Database
-- Mock
+1. Appeler les routes utilisateur sans jeton : attendre `401`.
+2. Générer ou lire une recommandation pour l’audit d’un autre utilisateur : attendre `404`.
+3. Essayer de générer sur un audit non terminé : attendre `409` et aucun appel fournisseur.
+4. Générer sur un audit terminé : stocker et retourner la recommandation.
+5. Parcourir l’historique paginé, du plus récent au plus ancien, avec `per_page` plafonné à 50.
+6. Provoquer une erreur fournisseur ou un JSON invalide : attendre une erreur générique sans données brutes.
+7. Vérifier que la clé API n’apparaît ni dans les réponses ni dans les journaux d’usage.
+8. Dépasser la limite de génération : attendre `429`.
+9. Vérifier que la vue administrative globale limite le texte à un aperçu de 300 caractères et n’expose aucune donnée fournisseur sensible.
 
-## How to run
+## Résultat attendu
 
-```bash
-php artisan test
-```
+Seul le propriétaire d’un audit terminé peut générer et consulter ses recommandations. La pagination, les limites de débit et l’assainissement des erreurs restent actifs.
 
-## Status
+## Fichiers PHPUnit associés
 
-DONE
+- `tests/Feature/AiRecommendationApiTest.php`
+- `tests/Feature/AdminRecommendationApiTest.php`
+
+## État actuel
+
+**Validé** — accès, état, pagination, secrets et vue administrative couverts.

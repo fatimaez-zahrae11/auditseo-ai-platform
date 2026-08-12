@@ -1,34 +1,32 @@
-# SEO Scoring
+# Cas de test — Calcul des scores SEO
 
-## Backend part
+## Objectif
 
-`app/Services/Seo/SeoScoringService.php`
+Vérifier que les signaux techniques, contenu, liens et performance influencent correctement les scores sans sortir des bornes prévues.
 
-## Real executable test file
+## Routes concernées
+
+Résultats visibles via `GET /api/audits/{audit}` et `GET /api/dashboard` après traitement asynchrone.
+
+## Préconditions
+
+Fournir au service de scoring des jeux de données contrôlés représentant des pages saines et des problèmes SEO variés.
+
+## Scénarios
+
+1. Dégrader le score de performance pour une page lente ou volumineuse.
+2. Dégrader et borner les scores selon les métadonnées HTTP, liens, contenu on-page, robots et sitemap.
+3. Appliquer les pénalités de crawl multi-page, données structurées et qualité globale du site.
+4. Vérifier que les scores restent dans les limites attendues.
+
+## Résultat attendu
+
+Chaque famille de signaux affecte la composante appropriée et aucun score ne dépasse ses bornes.
+
+## Fichiers PHPUnit associés
 
 - `tests/Unit/SeoScoringServiceTest.php`
-- `tests/Feature/AuditApiTest.php`
 
-## What is tested
+## État actuel
 
-- Technical score
-- Content score
-- Links score
-- Performance score
-- Global score
-- Scores stay between `0` and `100`
-
-## Test type
-
-- Unit
-- Integration
-
-## How to run
-
-```bash
-php artisan test
-```
-
-## Status
-
-DONE
+**Validé** — huit scénarios unitaires couvrent les familles de score.

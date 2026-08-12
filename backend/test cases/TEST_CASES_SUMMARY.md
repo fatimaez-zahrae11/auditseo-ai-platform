@@ -1,32 +1,59 @@
-# Backend Test Cases Summary
+# Synthèse des cas de test du backend
 
-The files in `test cases` are review notes. They are **not executable tests** and do not replace PHPUnit !!
-## Note on naming convention
-The executable test files follow the `XxxTest.php` **naming convention**
+## Objectif
 
-The real tests are in:
+Présenter au superviseur les scénarios de validation fonctionnelle et de sécurité du backend AuditSEO AI Platform. Ces documents sont lisibles par un humain : ils ne remplacent pas les tests automatisés.
 
-- `tests/Feature/`
-- `tests/Unit/`
+## Routes concernées
 
-Run all tests from the backend folder:
+Toutes les routes publiques, authentifiées et administratives décrites dans `API_DOCUMENTATION.md`.
+
+## Préconditions
+
+- Dépendances Composer installées.
+- Environnement de test Laravel configuré par `phpunit.xml` avec SQLite en mémoire, cache en tableau et file synchrone.
+- Aucun secret de production requis.
+
+## Scénario
+
+Depuis le dossier `backend`, exécuter :
 
 ```bash
 php artisan test
+composer audit
+php artisan route:list --path=api/admin
 ```
 
-## Covered areas
+Consulter ensuite les documents thématiques de ce dossier pour relier les résultats aux risques couverts.
 
-- Authentication
-- Audit API
-- SEO crawler
-- SEO scoring
-- AI recommendations
-- Dashboard
-- Security
-- Database persistence
-- Manual backend workflow
+## Résultat attendu
 
-The backend workflow was also checked manually with Thunder Client.
+- Tous les tests PHPUnit réussissent.
+- Composer ne signale aucun avis de sécurité.
+- Les 13 routes administratives attendues sont présentes.
+- Les contrôles d’accès, de propriété, de confidentialité et de disponibilité restent actifs.
 
-Frontend E2E testing is pending frontend integration.
+## Fichiers PHPUnit associés
+
+- `tests/Feature/*.php`
+- `tests/Unit/*.php`
+
+## État actuel
+
+**Validé** — 343 tests réussis, 3677 assertions ; 33 routes au total ; 13 routes administratives ; aucun avis Composer.
+
+## Index documentaire
+
+- `test-auth-controller.md` : authentification, activation et rôles.
+- `test-audit-controller.md` : API d’audit et isolation par utilisateur.
+- `test-seo-crawler-service.md` : SSRF, DNS et limites du crawler.
+- `test-ai-recommendation-controller.md` : API de recommandations IA.
+- `test-ai-recommendation-service.md` : sécurité du fournisseur IA.
+- `test-admin-backoffice.md` : backoffice administratif.
+- `test-api-usage-log.md` : journalisation et confidentialité.
+- `test-queue-health.md` : file d’attente, santé et planification.
+- `test-resend-dependencies.md` : Resend et dépendances.
+- `test-dashboard-controller.md` : agrégats utilisateur.
+- `test-seo-scoring-service.md` : calcul des scores SEO.
+- `test-security-rules.md` : matrice transversale de sécurité.
+- `test-manual-backend-workflow.md` : contrôle manuel complémentaire.

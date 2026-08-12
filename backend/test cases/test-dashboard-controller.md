@@ -1,34 +1,33 @@
-# Dashboard API
+# Cas de test — Dashboard utilisateur
 
-## Backend part
+## Objectif
 
-`app/Http/Controllers/Api/DashboardController.php`
+Vérifier que les statistiques du dashboard sont exactes et strictement limitées à l’utilisateur authentifié.
 
-## Real executable test file
+## Routes concernées
 
-`tests/Feature/DashboardApiTest.php`
+`GET /api/dashboard`.
 
-## What is tested
+## Préconditions
 
-- Authentication is required
-- Audit, issue, and recommendation totals
-- Average score and latest audit
-- Data is limited to the current user
-- Empty dashboard response
+Créer plusieurs utilisateurs avec des audits dans tous les états, des problèmes et des recommandations.
 
-## Test type
+## Scénarios
 
-- Feature
-- Integration
-- Security
-- Database
+1. Appeler sans authentification : attendre `401`.
+2. Vérifier les totaux `pending`, `running`, `completed` et `failed`.
+3. Calculer la moyenne uniquement avec les audits terminés.
+4. Vérifier le comportement à zéro lorsqu’aucun audit terminé n’existe.
+5. Confirmer que les audits, problèmes et recommandations d’un autre utilisateur sont absents.
 
-## How to run
+## Résultat attendu
 
-```bash
-php artisan test
-```
+Les agrégats, le dernier audit et le dernier audit terminé appartiennent exclusivement à l’utilisateur courant.
 
-## Status
+## Fichiers PHPUnit associés
 
-DONE
+- `tests/Feature/DashboardApiTest.php`
+
+## État actuel
+
+**Validé** — calculs et isolation multi-utilisateur couverts.
