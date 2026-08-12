@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\Admin\AdminUserController;
 use App\Http\Controllers\Api\AiRecommendationController;
 use App\Http\Controllers\Api\AuditController;
 use App\Http\Controllers\Api\AuthController;
@@ -19,6 +20,14 @@ Route::middleware('throttle:api-public')->group(function () {
         ->name('verification.verify');
     Route::post('/email/verification-notification', [EmailVerificationController::class, 'resend'])
         ->middleware('throttle:verification');
+});
+
+// Admin middleware permits these routes to use global, rather than user-scoped, queries.
+Route::prefix('admin')->middleware(['auth:sanctum', 'active', 'admin'])->group(function () {
+    Route::get('/users', [AdminUserController::class, 'index']);
+    Route::post('/users', [AdminUserController::class, 'store']);
+    Route::patch('/users/{user}/deactivate', [AdminUserController::class, 'deactivate']);
+    Route::patch('/users/{user}/reactivate', [AdminUserController::class, 'reactivate']);
 });
 
 Route::middleware([
