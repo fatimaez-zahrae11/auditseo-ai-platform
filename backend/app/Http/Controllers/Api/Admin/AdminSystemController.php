@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\AccessLog;
+use App\Models\AdminActionLog;
 use App\Models\Audit;
+use App\Services\AdminActionLogger;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -25,7 +27,7 @@ class AdminSystemController extends Controller
 
     private const MAX_LOG_LINE_LENGTH = 2_000;
 
-    public function logs(Request $request): JsonResponse
+    public function logs(Request $request, AdminActionLogger $actionLogger): JsonResponse
     {
         $requestedLines = filter_var(
             $request->query('lines'),
@@ -41,6 +43,12 @@ class AdminSystemController extends Controller
         // This fixed path is intentional: request input must never select a server file.
         $logLines = $this->latestLines($path, $limit);
         $exists = is_file($path);
+        $actionLogger->log(
+            $request->user(),
+            AdminActionLog::ACTION_SYSTEM_LOGS_VIEWED,
+            metadata: ['lines_returned' => count($logLines)],
+            request: $request,
+        );
 
         // System details are safe only behind the auth:sanctum, active, and admin route group.
         return response()->json([
@@ -53,8 +61,10 @@ class AdminSystemController extends Controller
         ]);
     }
 
-    public function healthDetailed(): JsonResponse
-    {
+    public function healthDetailed(
+        Request $request,
+        AdminActionLogger $actionLogger,
+    ): JsonResponse {
         $generatedAt = CarbonImmutable::now();
         $queueConnection = $this->safeConfigName(config('queue.default'));
         $cacheDriver = $this->safeConfigName(config('cache.default'));
@@ -78,6 +88,11 @@ class AdminSystemController extends Controller
         }
 
         $redisStatus = $this->redisStatus($queueConnection, $cacheDriver);
+        $actionLogger->log(
+            $request->user(),
+            AdminActionLog::ACTION_SYSTEM_HEALTH_VIEWED,
+            request: $request,
+        );
 
         return response()->json([
             'app_env' => $this->safeConfigName(app()->environment()),

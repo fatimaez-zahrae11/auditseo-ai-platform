@@ -69,6 +69,11 @@ class User extends Authenticatable implements MustVerifyEmail
         return $this->hasMany(AccessLog::class);
     }
 
+    public function adminActionLogs(): HasMany
+    {
+        return $this->hasMany(AdminActionLog::class, 'admin_user_id');
+    }
+
     /**
      * Get the attributes that should be cast.
      *

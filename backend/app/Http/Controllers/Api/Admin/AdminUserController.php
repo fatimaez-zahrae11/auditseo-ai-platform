@@ -6,8 +6,10 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\DeactivateAdminUserRequest;
 use App\Http\Requests\Admin\StoreAdminUserRequest;
 use App\Models\AccessLog;
+use App\Models\AdminActionLog;
 use App\Models\Audit;
 use App\Models\User;
+use App\Services\AdminActionLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -64,14 +66,22 @@ class AdminUserController extends Controller
         ]);
     }
 
-    public function store(StoreAdminUserRequest $request): JsonResponse
-    {
+    public function store(
+        StoreAdminUserRequest $request,
+        AdminActionLogger $actionLogger,
+    ): JsonResponse {
         $user = User::create([
             'name' => $request->validated('name'),
             'email' => $request->validated('email'),
             'password' => Hash::make($request->validated('password')),
         ]);
 
+        $actionLogger->log(
+            $request->user(),
+            AdminActionLog::ACTION_USER_CREATED,
+            $user,
+            request: $request,
+        );
         $user->sendEmailVerificationNotification();
 
         return response()->json([
@@ -80,8 +90,11 @@ class AdminUserController extends Controller
         ], 201);
     }
 
-    public function deactivate(DeactivateAdminUserRequest $request, User $user): JsonResponse
-    {
+    public function deactivate(
+        DeactivateAdminUserRequest $request,
+        User $user,
+        AdminActionLogger $actionLogger,
+    ): JsonResponse {
         $adminId = (int) $request->user()->id;
         $blockedReason = $request->validated('blocked_reason');
 
@@ -113,20 +126,37 @@ class AdminUserController extends Controller
             return $target->refresh();
         });
 
+        $actionLogger->log(
+            $request->user(),
+            AdminActionLog::ACTION_USER_DEACTIVATED,
+            $user,
+            request: $request,
+        );
+
         return response()->json([
             'message' => 'User deactivated successfully.',
             'user' => $this->identity($user),
         ]);
     }
 
-    public function reactivate(Request $request, User $user): JsonResponse
-    {
+    public function reactivate(
+        Request $request,
+        User $user,
+        AdminActionLogger $actionLogger,
+    ): JsonResponse {
         $user->forceFill([
             'is_active' => true,
             'blocked_at' => null,
             'blocked_reason' => null,
             'blocked_by' => null,
         ])->save();
+
+        $actionLogger->log(
+            $request->user(),
+            AdminActionLog::ACTION_USER_REACTIVATED,
+            $user,
+            request: $request,
+        );
 
         return response()->json([
             'message' => 'User reactivated successfully.',

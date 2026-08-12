@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\Admin\AdminActionLogController;
 use App\Http\Controllers\Api\Admin\AdminAnalyticsController;
 use App\Http\Controllers\Api\Admin\AdminAuditController;
 use App\Http\Controllers\Api\Admin\AdminRecommendationController;
@@ -28,6 +29,7 @@ Route::middleware('throttle:api-public')->group(function () {
 
 // Admin middleware permits these routes to use global, rather than user-scoped, queries.
 Route::prefix('admin')->middleware(['auth:sanctum', 'active', 'admin'])->group(function () {
+    Route::get('/action-logs', [AdminActionLogController::class, 'index']);
     Route::get('/analytics/overview', [AdminAnalyticsController::class, 'overview']);
     Route::get('/analytics/active-users', [AdminAnalyticsController::class, 'activeUsers']);
     Route::get('/analytics/heavy-users', [AdminAnalyticsController::class, 'heavyUsers']);
