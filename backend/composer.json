@@ -67,7 +67,9 @@
     },
     "extra": {
         "laravel": {
-            "dont-discover": []
+            "dont-discover": [
+                "resend/resend-laravel"
+            ]
         }
     },
     "config": {
