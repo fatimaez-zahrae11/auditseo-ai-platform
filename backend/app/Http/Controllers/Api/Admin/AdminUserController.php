@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Admin;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\DeactivateAdminUserRequest;
 use App\Http\Requests\Admin\StoreAdminUserRequest;
+use App\Models\AccessLog;
 use App\Models\Audit;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
@@ -130,6 +131,81 @@ class AdminUserController extends Controller
         return response()->json([
             'message' => 'User reactivated successfully.',
             'user' => $this->identity($user->refresh()),
+        ]);
+    }
+
+    public function activity(User $user): JsonResponse
+    {
+        // This global activity view is available only through the protected admin route group.
+        $latestLog = AccessLog::query()
+            ->where('user_id', $user->id)
+            ->latest('created_at')
+            ->latest('id')
+            ->first();
+        $lastIp = AccessLog::query()
+            ->where('user_id', $user->id)
+            ->whereNotNull('ip_address')
+            ->latest('created_at')
+            ->latest('id')
+            ->value('ip_address');
+        $requestCounts = AccessLog::query()
+            ->where('user_id', $user->id)
+            ->selectRaw(
+                'SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as last_24h, '.
+                'SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as last_7d',
+                [now()->subDay(), now()->subDays(7)],
+            )
+            ->first();
+        $recentRoutes = AccessLog::query()
+            ->where('user_id', $user->id)
+            ->latest('created_at')
+            ->latest('id')
+            ->limit(10)
+            ->get([
+                'route',
+                'method',
+                'status_code',
+                'created_at',
+            ])
+            ->map(fn (AccessLog $log): array => [
+                'route' => $log->route,
+                'method' => $log->method,
+                'status_code' => $log->status_code,
+                'created_at' => $log->created_at,
+            ])
+            ->all();
+        $aggregateUser = User::query()
+            ->select(['users.id'])
+            ->withCount([
+                'audits',
+                'audits as completed_audits_count' => fn ($query) => $query
+                    ->where('audits.status', Audit::STATUS_COMPLETED),
+                'audits as failed_audits_count' => fn ($query) => $query
+                    ->where('audits.status', Audit::STATUS_FAILED),
+            ])
+            ->selectSub(function ($query) {
+                $query->from('ai_recommendations')
+                    ->join('audits', 'audits.id', '=', 'ai_recommendations.audit_id')
+                    ->join('domains', 'domains.id', '=', 'audits.domain_id')
+                    ->selectRaw('COUNT(*)')
+                    ->whereColumn('domains.user_id', 'users.id');
+            }, 'recommendations_count')
+            ->findOrFail($user->id);
+
+        return response()->json([
+            'user' => [
+                'id' => $user->id,
+                'email' => $user->email,
+            ],
+            'last_seen_at' => $latestLog?->created_at,
+            'last_ip' => $lastIp,
+            'request_count_last_24h' => (int) ($requestCounts?->last_24h ?? 0),
+            'request_count_last_7d' => (int) ($requestCounts?->last_7d ?? 0),
+            'recent_routes' => $recentRoutes,
+            'audits_count' => (int) $aggregateUser->audits_count,
+            'completed_audits_count' => (int) $aggregateUser->completed_audits_count,
+            'failed_audits_count' => (int) $aggregateUser->failed_audits_count,
+            'recommendations_count' => (int) $aggregateUser->recommendations_count,
         ]);
     }
 

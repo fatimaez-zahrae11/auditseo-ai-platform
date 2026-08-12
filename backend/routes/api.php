@@ -28,6 +28,7 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'active', 'admin'])->group(f
     Route::get('/audits', [AdminAuditController::class, 'index']);
     Route::get('/users', [AdminUserController::class, 'index']);
     Route::post('/users', [AdminUserController::class, 'store']);
+    Route::get('/users/{user}/activity', [AdminUserController::class, 'activity']);
     Route::patch('/users/{user}/deactivate', [AdminUserController::class, 'deactivate']);
     Route::patch('/users/{user}/reactivate', [AdminUserController::class, 'reactivate']);
 });
