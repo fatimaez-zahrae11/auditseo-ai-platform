@@ -1,35 +1,27 @@
-# Cas de test — Sécurité du service IA
+# Service de recommandations IA
 
 ## Objectif
 
-Vérifier que le service IA ne contacte qu’un fournisseur explicitement autorisé et ne transmet que les signaux SEO nécessaires.
+Contrôler la destination du fournisseur, le contenu envoyé et les limites appliquées aux réponses.
 
-## Routes concernées
+## Cas couverts
 
-`POST /api/audits/{audit}/recommendations`.
+- [x] HTTPS obligatoire et correspondance exacte avec l’allowlist
+- [x] Refus des hôtes inattendus et configurations invalides
+- [x] Redirections désactivées
+- [x] Prompt limité aux signaux SEO utiles et URL assainies
+- [x] Limites avant et pendant la lecture de la réponse
+- [x] Limites après décompression et sur le texte final
+- [x] Erreurs réseau, JSON et fournisseur transformées en erreur générique
 
-## Préconditions
-
-Disposer d’un audit terminé et simuler des configurations d’URL fournisseur, redirections, longueurs et réponses JSON.
-
-## Scénarios
-
-1. Accepter uniquement une URL HTTPS dont l’hôte correspond exactement à la liste autorisée.
-2. Refuser HTTP, les hôtes inattendus, les jokers et les configurations manquantes ou mal formées.
-3. Ne suivre aucune redirection du fournisseur.
-4. Vérifier que le prompt contient une sélection minimale de signaux et des URL assainies.
-5. Refuser une réponse trop grande avant lecture lorsque la longueur est fiable, puis pendant le streaming dans tous les autres cas.
-6. Appliquer la limite après décompression et limiter aussi la longueur finale du texte généré.
-7. Transformer les erreurs réseau, JSON et fournisseur en réponse générique sans clé ni réponse brute.
-
-## Résultat attendu
-
-Le service contacte exclusivement l’hôte HTTPS prévu, borne les données entrantes et sortantes et ne révèle aucun secret.
-
-## Fichiers PHPUnit associés
+## Fichiers PHPUnit liés
 
 - `tests/Feature/AiRecommendationApiTest.php`
 
+## Résultat attendu
+
+Le service contacte uniquement l’hôte HTTPS prévu et ne transmet ni ne retourne de donnée sensible inutile.
+
 ## État actuel
 
-**Validé** — allowlist exacte, redirections, prompt et limites de taille couverts.
+Couvert par les tests automatisés. Dernier résultat global : 343 tests réussis, 3677 assertions.

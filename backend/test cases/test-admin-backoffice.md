@@ -1,35 +1,22 @@
-# Cas de test — Backoffice administratif
+# Backoffice administrateur
 
 ## Objectif
 
-Vérifier que les vues globales et actions sensibles sont réservées aux administrateurs actifs, paginées, efficaces et expurgées.
+Vérifier les 13 routes admin et leur middleware `auth:sanctum -> active -> admin`.
 
-## Routes concernées
+## Cas couverts
 
-Les 13 routes sous `/api/admin` : journaux d’actions, trois analytics, audits, recommandations, deux routes système et cinq routes utilisateurs.
+- [x] Refus des requêtes anonymes, non-admin et admin inactif
+- [x] Liste et création d’utilisateurs réguliers uniquement
+- [x] Désactivation, révocation des jetons et réactivation
+- [x] Auto-désactivation et désactivation du dernier admin bloquées
+- [x] Supervision globale des audits et recommandations
+- [x] Analytics, activité utilisateur et pagination
+- [x] Journaux système et santé détaillée expurgés
+- [x] Journal des actions administratives et filtres
+- [x] Plafonds `per_page` et contrôles de requêtes N+1
 
-## Préconditions
-
-Créer un utilisateur régulier, un administrateur actif, un administrateur inactif, plusieurs propriétaires d’audits/recommandations et suffisamment d’éléments pour tester la pagination.
-
-## Scénarios
-
-1. Appeler chaque famille sans jeton, avec un non-admin puis avec un admin inactif : attendre respectivement `401`, `403`, `403`.
-2. Lister les utilisateurs avec compteurs exacts, sans champs sensibles ; vérifier le plafond `per_page`.
-3. Créer un utilisateur : imposer `role=user`, hacher le mot de passe et envoyer la vérification ; refuser `role=admin`.
-4. Désactiver puis réactiver un utilisateur ; vérifier métadonnées, révocation des jetons, rôle inchangé et absence de nouveau jeton.
-5. Bloquer l’auto-désactivation et celle du dernier administrateur actif.
-6. Superviser les audits et recommandations de plusieurs utilisateurs avec filtres, e-mail propriétaire et aperçu IA limité.
-7. Vérifier overview, utilisateurs actifs sur 15 minutes et classement des utilisateurs lourds avec filtres de dates.
-8. Lire les journaux système bornés et expurgés, puis la santé détaillée sans exception ni secret.
-9. Lister les actions administratives, appliquer tous les filtres et vérifier l’e-mail administrateur.
-10. Comparer le nombre de requêtes SQL sur petits et grands jeux : absence de croissance par résultat pour les endpoints couverts.
-
-## Résultat attendu
-
-Seuls les administrateurs actifs accèdent aux données globales. Les réponses sont paginées, efficaces et dépourvues de mots de passe, jetons, clés, corps bruts ou traces sensibles.
-
-## Fichiers PHPUnit associés
+## Fichiers PHPUnit liés
 
 - `tests/Feature/AdminMiddlewareTest.php`
 - `tests/Feature/AdminUserApiTest.php`
@@ -40,6 +27,10 @@ Seuls les administrateurs actifs accèdent aux données globales. Les réponses 
 - `tests/Feature/AdminActionLogApiTest.php`
 - `tests/Feature/AdminUserActivityApiTest.php`
 
+## Résultat attendu
+
+Seuls les administrateurs actifs accèdent aux données globales. L’API ne peut pas créer d’administrateur.
+
 ## État actuel
 
-**Validé** — accès, actions, pagination, N+1 et redaction couverts.
+Couvert par les tests automatisés. Dernier résultat global : 343 tests réussis, 3677 assertions.

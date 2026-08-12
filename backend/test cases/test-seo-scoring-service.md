@@ -1,32 +1,28 @@
-# Cas de test — Calcul des scores SEO
+# Calcul des scores SEO
 
 ## Objectif
 
-Vérifier que les signaux techniques, contenu, liens et performance influencent correctement les scores sans sortir des bornes prévues.
+Vérifier que les signaux détectés modifient les bonnes composantes du score sans dépasser les bornes.
 
-## Routes concernées
+## Cas couverts
 
-Résultats visibles via `GET /api/audits/{audit}` et `GET /api/dashboard` après traitement asynchrone.
+- [x] Pages lentes ou volumineuses
+- [x] Métadonnées de performance
+- [x] Liens et contenu on-page
+- [x] Robots, sitemap et technique
+- [x] Crawl multi-page
+- [x] Données structurées
+- [x] Qualité globale du site
+- [x] Bornage des scores
 
-## Préconditions
-
-Fournir au service de scoring des jeux de données contrôlés représentant des pages saines et des problèmes SEO variés.
-
-## Scénarios
-
-1. Dégrader le score de performance pour une page lente ou volumineuse.
-2. Dégrader et borner les scores selon les métadonnées HTTP, liens, contenu on-page, robots et sitemap.
-3. Appliquer les pénalités de crawl multi-page, données structurées et qualité globale du site.
-4. Vérifier que les scores restent dans les limites attendues.
-
-## Résultat attendu
-
-Chaque famille de signaux affecte la composante appropriée et aucun score ne dépasse ses bornes.
-
-## Fichiers PHPUnit associés
+## Fichiers PHPUnit liés
 
 - `tests/Unit/SeoScoringServiceTest.php`
 
+## Résultat attendu
+
+Chaque problème réduit la composante prévue et tous les scores restent dans l’intervalle autorisé.
+
 ## État actuel
 
-**Validé** — huit scénarios unitaires couvrent les familles de score.
+Couvert par les tests automatisés. Dernier résultat global : 343 tests réussis, 3677 assertions.

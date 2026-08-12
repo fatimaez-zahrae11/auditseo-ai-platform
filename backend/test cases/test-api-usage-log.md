@@ -1,36 +1,30 @@
-# Cas de test — Journalisation et confidentialité
+# Journalisation et confidentialité
 
 ## Objectif
 
-Vérifier que les journaux d’accès et d’actions administratives sont utiles à la supervision sans conserver de données secrètes.
+Vérifier que les journaux restent utiles sans stocker les données sensibles des requêtes.
 
-## Routes concernées
+## Cas couverts
 
-Routes API normales, `GET /api/admin/action-logs`, `GET /api/admin/system/logs` et actions sensibles sur les utilisateurs.
+- [x] Création d’un access log pour une requête API normale
+- [x] `user_id` présent pour une requête authentifiée et nul sinon
+- [x] Corps, query string, cookies et Authorization non stockés
+- [x] Endpoint de santé public exclu des logs
+- [x] Échec de journalisation sans impact sur la réponse
+- [x] Métadonnées sensibles retirées des actions admin
+- [x] Échec d’admin action logging isolé
+- [x] Journaux système limités et expurgés
 
-## Préconditions
-
-Créer des requêtes authentifiées et anonymes contenant volontairement corps, query string, cookies et en-tête Authorization factices ; disposer d’un administrateur actif.
-
-## Scénarios
-
-1. Effectuer une requête normale : créer une ligne sûre avec méthode, chemin, statut, IP, user-agent et utilisateur éventuel.
-2. Vérifier que corps, query string, cookies, Authorization, mots de passe, jetons et clés API ne sont pas stockés.
-3. Simuler une panne d’écriture d’`access_logs` : la réponse API d’origine reste inchangée.
-4. Enregistrer une action administrative avec des clés sensibles imbriquées : elles sont supprimées récursivement.
-5. Simuler une panne d’`admin_action_logs` pendant une création ou désactivation : l’action métier reste réussie.
-6. Lire le journal Laravel via l’administration : les lignes sont limitées, le fichier est fixe et les secrets, chemins sensibles et traces sont expurgés.
-
-## Résultat attendu
-
-Seules les métadonnées minimales autorisées sont conservées. Aucun échec de journalisation ne casse une réponse normale.
-
-## Fichiers PHPUnit associés
+## Fichiers PHPUnit liés
 
 - `tests/Feature/AccessLogTest.php`
 - `tests/Feature/AdminActionLogApiTest.php`
 - `tests/Feature/AdminSystemApiTest.php`
 
+## Résultat attendu
+
+Seules les métadonnées prévues sont conservées. Une panne de journalisation ne doit pas casser l’action principale.
+
 ## État actuel
 
-**Validé** — confidentialité, redaction et tolérance aux pannes couvertes.
+Couvert par les tests automatisés. Dernier résultat global : 343 tests réussis, 3677 assertions.

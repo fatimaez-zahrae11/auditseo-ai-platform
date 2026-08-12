@@ -1,33 +1,25 @@
-# Cas de test — Dashboard utilisateur
+# Dashboard utilisateur
 
 ## Objectif
 
-Vérifier que les statistiques du dashboard sont exactes et strictement limitées à l’utilisateur authentifié.
+Vérifier les statistiques du dashboard et leur périmètre utilisateur.
 
-## Routes concernées
+## Cas couverts
 
-`GET /api/dashboard`.
+- [x] Authentification obligatoire
+- [x] Comptage des audits par statut
+- [x] Moyenne calculée uniquement sur les audits terminés
+- [x] Valeurs nulles ou à zéro sans données
+- [x] Problèmes, recommandations et derniers audits limités au compte courant
 
-## Préconditions
-
-Créer plusieurs utilisateurs avec des audits dans tous les états, des problèmes et des recommandations.
-
-## Scénarios
-
-1. Appeler sans authentification : attendre `401`.
-2. Vérifier les totaux `pending`, `running`, `completed` et `failed`.
-3. Calculer la moyenne uniquement avec les audits terminés.
-4. Vérifier le comportement à zéro lorsqu’aucun audit terminé n’existe.
-5. Confirmer que les audits, problèmes et recommandations d’un autre utilisateur sont absents.
-
-## Résultat attendu
-
-Les agrégats, le dernier audit et le dernier audit terminé appartiennent exclusivement à l’utilisateur courant.
-
-## Fichiers PHPUnit associés
+## Fichiers PHPUnit liés
 
 - `tests/Feature/DashboardApiTest.php`
 
+## Résultat attendu
+
+Les indicateurs sont exacts et ne contiennent aucune donnée d’un autre utilisateur.
+
 ## État actuel
 
-**Validé** — calculs et isolation multi-utilisateur couverts.
+Couvert par les tests automatisés. Dernier résultat global : 343 tests réussis, 3677 assertions.

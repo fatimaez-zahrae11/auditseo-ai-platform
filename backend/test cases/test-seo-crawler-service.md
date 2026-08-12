@@ -1,37 +1,29 @@
-# Cas de test — Sécurité SSRF et crawler SEO
+# Sécurité SSRF et crawler SEO
 
 ## Objectif
 
-Prouver que le crawler ne peut pas être utilisé pour atteindre des services internes et qu’il borne toutes les réponses distantes.
+Vérifier que le crawler atteint seulement des destinations publiques validées et respecte les limites de taille.
 
-## Routes concernées
+## Cas couverts
 
-Principalement `POST /api/audits`, puis le job asynchrone associé.
+- [x] Blocage de localhost, des IP privées et des réseaux spéciaux IPv4/IPv6
+- [x] Refus des identifiants dans l’URL et des schémas non sûrs
+- [x] Résolution et épinglage DNS obligatoires
+- [x] Revalidation de chaque redirection
+- [x] Limites sur HTML normal, chunked et compressé
+- [x] Traitement borné de `robots.txt` et des sitemaps
+- [x] Vérification bornée des liens et ressources secondaires
+- [x] Échec fermé si l’épinglage DNS n’est pas disponible
 
-## Préconditions
-
-Utiliser des résolutions DNS et réponses HTTP simulées : adresses publiques, locales, privées, spéciales, redirections et contenus de tailles variées.
-
-## Scénarios
-
-1. Refuser `localhost`, IPv4/IPv6 loopback, privées, link-local, partagées et réseaux spéciaux.
-2. Refuser les URL contenant un nom d’utilisateur ou mot de passe et les schémas comme `file:` ou `ftp:`.
-3. Exiger l’épinglage DNS ; si le transport sécurisé n’est pas disponible, échouer de façon fermée.
-4. Réévaluer chaque redirection de page, ressource secondaire ou lien et bloquer toute destination non publique.
-5. Interrompre un HTML trop volumineux, y compris lorsque `Content-Length` est absent ou trompeur.
-6. Appliquer les limites après décompression afin qu’une petite réponse compressée ne puisse pas gonfler sans borne.
-7. Ignorer ou limiter sans danger les fichiers `robots.txt`, sitemaps et sitemaps enfants trop grands.
-8. Borner les vérifications de liens et interrompre les corps dépassant la limite.
-
-## Résultat attendu
-
-Aucune requête n’atteint une adresse interdite. Chaque saut est revalidé, les tailles sont bornées pendant le streaming et les échecs produisent des messages sûrs.
-
-## Fichiers PHPUnit associés
+## Fichiers PHPUnit liés
 
 - `tests/Feature/StoreAuditRequestTest.php`
 - `tests/Feature/AuditApiTest.php`
 
+## Résultat attendu
+
+Aucune requête ne doit atteindre une adresse interdite. Les réponses trop grandes sont interrompues sans fuite technique.
+
 ## État actuel
 
-**Validé** — scénarios SSRF, DNS, redirections et tailles compressées réussis.
+Couvert par les tests automatisés. Dernier résultat global : 343 tests réussis, 3677 assertions.
