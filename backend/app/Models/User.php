@@ -24,6 +24,7 @@ class User extends Authenticatable implements MustVerifyEmail
      * @var array<string, mixed>
      */
     protected $attributes = [
+        'is_active' => true,
         'role' => self::ROLE_USER,
     ];
 
@@ -44,6 +45,9 @@ class User extends Authenticatable implements MustVerifyEmail
      * @var list<string>
      */
     protected $hidden = [
+        'blocked_at',
+        'blocked_reason',
+        'blocked_by',
         'password',
         'remember_token',
     ];
@@ -61,7 +65,9 @@ class User extends Authenticatable implements MustVerifyEmail
     protected function casts(): array
     {
         return [
+            'blocked_at' => 'datetime',
             'email_verified_at' => 'datetime',
+            'is_active' => 'boolean',
             'password' => 'hashed',
         ];
     }

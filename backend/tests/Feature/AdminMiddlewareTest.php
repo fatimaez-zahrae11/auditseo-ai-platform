@@ -18,7 +18,7 @@ class AdminMiddlewareTest extends TestCase
     {
         parent::setUp();
 
-        Route::middleware(['auth:sanctum', 'admin'])
+        Route::middleware(['auth:sanctum', 'active', 'admin'])
             ->get(self::TEST_ROUTE, fn () => response()->json([
                 'message' => 'Admin access granted',
             ]));
@@ -56,6 +56,22 @@ class AdminMiddlewareTest extends TestCase
             ->assertOk()
             ->assertExactJson([
                 'message' => 'Admin access granted',
+            ]);
+    }
+
+    public function test_inactive_admin_user_is_blocked(): void
+    {
+        $admin = User::factory()->create();
+        $admin->role = User::ROLE_ADMIN;
+        $admin->is_active = false;
+        $admin->save();
+
+        Sanctum::actingAs($admin);
+
+        $this->getJson(self::TEST_ROUTE)
+            ->assertForbidden()
+            ->assertExactJson([
+                'message' => 'Account disabled',
             ]);
     }
 }

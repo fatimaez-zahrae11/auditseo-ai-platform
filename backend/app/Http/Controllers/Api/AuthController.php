@@ -54,6 +54,20 @@ class AuthController extends Controller
             ], 422);
         }
 
+        if (! $user->is_active) {
+            $this->recordAuthEvent(
+                request: $request,
+                event: AuthAuditLog::EVENT_LOGIN,
+                status: AuthAuditLog::STATUS_FAILED,
+                user: $user,
+                email: $user->email,
+            );
+
+            return response()->json([
+                'message' => 'Account disabled',
+            ], 403);
+        }
+
         if (! $user->hasVerifiedEmail()) {
             $this->recordAuthEvent(
                 request: $request,

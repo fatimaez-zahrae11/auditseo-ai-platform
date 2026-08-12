@@ -23,6 +23,7 @@ Route::middleware('throttle:api-public')->group(function () {
 
 Route::middleware([
     'auth:sanctum',
+    'active',
     'throttle:api-authenticated',
     'throttle:30,1',
 ])->group(function () {
