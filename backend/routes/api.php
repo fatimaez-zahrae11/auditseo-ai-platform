@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\Admin\AdminAnalyticsController;
 use App\Http\Controllers\Api\Admin\AdminAuditController;
+use App\Http\Controllers\Api\Admin\AdminRecommendationController;
 use App\Http\Controllers\Api\Admin\AdminUserController;
 use App\Http\Controllers\Api\AiRecommendationController;
 use App\Http\Controllers\Api\AuditController;
@@ -30,6 +31,7 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'active', 'admin'])->group(f
     Route::get('/analytics/active-users', [AdminAnalyticsController::class, 'activeUsers']);
     Route::get('/analytics/heavy-users', [AdminAnalyticsController::class, 'heavyUsers']);
     Route::get('/audits', [AdminAuditController::class, 'index']);
+    Route::get('/recommendations', [AdminRecommendationController::class, 'index']);
     Route::get('/users', [AdminUserController::class, 'index']);
     Route::post('/users', [AdminUserController::class, 'store']);
     Route::get('/users/{user}/activity', [AdminUserController::class, 'activity']);
