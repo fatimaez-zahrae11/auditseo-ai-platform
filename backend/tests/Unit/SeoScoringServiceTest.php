@@ -92,6 +92,45 @@ class SeoScoringServiceTest extends TestCase
         }
     }
 
+    public function test_nofollow_link_penalty_only_applies_to_unusually_high_ratios(): void
+    {
+        $service = new SeoScoringService;
+
+        $cases = [
+            ['links' => 0, 'nofollow' => 10, 'expected' => 70],
+            ['links' => 10, 'nofollow' => 5, 'expected' => 100],
+            ['links' => 10, 'nofollow' => 6, 'expected' => 95],
+            ['links' => 10, 'nofollow' => 9, 'expected' => 90],
+        ];
+
+        foreach ($cases as $case) {
+            $scores = $service->calculate([
+                ...$this->completeData(),
+                'links_count' => $case['links'],
+                'nofollow_links_count' => $case['nofollow'],
+            ]);
+
+            $this->assertSame($case['expected'], $scores['links_score']);
+        }
+    }
+
+    public function test_meta_description_penalties_are_kept_light(): void
+    {
+        $service = new SeoScoringService;
+
+        $missingScores = $service->calculate([
+            ...$this->completeData(),
+            'meta_description' => null,
+        ]);
+        $badLengthScores = $service->calculate([
+            ...$this->completeData(),
+            'meta_description_length' => 20,
+        ]);
+
+        $this->assertSame(90, $missingScores['content_score']);
+        $this->assertSame(97, $badLengthScores['content_score']);
+    }
+
     public function test_declared_sitemap_receives_a_smaller_missing_sitemap_penalty(): void
     {
         $service = new SeoScoringService;
@@ -290,6 +329,7 @@ class SeoScoringServiceTest extends TestCase
             'viewport_found' => true,
             'html_lang' => 'en',
             'links_count' => 1,
+            'nofollow_links_count' => 0,
             'checked_links_count' => 0,
             'broken_links_count' => 0,
             'response_time_ms' => 100,

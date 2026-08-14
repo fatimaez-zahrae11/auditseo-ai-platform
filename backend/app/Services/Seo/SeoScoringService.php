@@ -23,10 +23,10 @@ class SeoScoringService
         }
 
         if ($data['meta_description'] === null) {
-            $contentScore -= 20;
+            $contentScore -= 10;
         } elseif (($data['meta_description_length'] ?? mb_strlen($data['meta_description'])) < 70
             || ($data['meta_description_length'] ?? mb_strlen($data['meta_description'])) > 160) {
-            $contentScore -= 5;
+            $contentScore -= 3;
         }
 
         if (array_key_exists('word_count', $data) && $data['word_count'] < 300) {
@@ -178,6 +178,18 @@ class SeoScoringService
                 $linksScore -= 5;
             }
         }
+
+        $linksCount = max(0, (int) $data['links_count']);
+        if ($linksCount > 0) {
+            $nofollowLinksRatio = max(0, (int) ($data['nofollow_links_count'] ?? 0)) / $linksCount;
+
+            if ($nofollowLinksRatio > 0.8) {
+                $linksScore -= 10;
+            } elseif ($nofollowLinksRatio > 0.5) {
+                $linksScore -= 5;
+            }
+        }
+
         $linksScore -= min(15, ((int) ($data['empty_anchor_links_count'] ?? 0)) * 3);
         $linksScore -= min(15, ((int) ($data['generic_anchor_links_count'] ?? 0)) * 3);
 

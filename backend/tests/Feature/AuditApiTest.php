@@ -1645,7 +1645,7 @@ class AuditApiTest extends TestCase
 
         $response
             ->assertOk()
-            ->assertJsonPath('audit.content_score', 50)
+            ->assertJsonPath('audit.content_score', 52)
             ->assertJsonFragment(['title' => 'Missing page title']);
         $this->assertDatabaseHas('audit_issues', ['title' => 'Missing page title']);
     }
@@ -1659,7 +1659,7 @@ class AuditApiTest extends TestCase
 
         $response
             ->assertOk()
-            ->assertJsonPath('audit.content_score', 50)
+            ->assertJsonPath('audit.content_score', 60)
             ->assertJsonFragment(['title' => 'Missing meta description']);
         $this->assertDatabaseHas('audit_issues', ['title' => 'Missing meta description']);
     }
@@ -1686,10 +1686,10 @@ class AuditApiTest extends TestCase
         $response
             ->assertOk()
             ->assertJsonPath('audit.technical_score', 100)
-            ->assertJsonPath('audit.content_score', 50)
+            ->assertJsonPath('audit.content_score', 52)
             ->assertJsonPath('audit.links_score', 70)
             ->assertJsonPath('audit.performance_score', 100)
-            ->assertJsonPath('audit.global_score', 78);
+            ->assertJsonPath('audit.global_score', 79);
     }
 
     public function test_all_calculated_scores_remain_between_zero_and_one_hundred(): void
