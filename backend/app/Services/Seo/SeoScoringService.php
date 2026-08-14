@@ -100,7 +100,7 @@ class SeoScoringService
         }
 
         if (! $data['sitemap_xml_found']) {
-            $technicalScore -= 20;
+            $technicalScore -= empty($data['robots_txt_sitemap_urls'] ?? []) ? 20 : 10;
         }
 
         if (($data['robots_txt_allows_audited_url'] ?? true) === false) {
@@ -164,7 +164,20 @@ class SeoScoringService
             $linksScore -= 30;
         }
 
-        $linksScore -= min(60, ((int) ($data['broken_links_count'] ?? 0)) * 15);
+        $checkedLinksCount = max(0, (int) ($data['checked_links_count'] ?? 0));
+        if ($checkedLinksCount > 0) {
+            $brokenLinksRatio = max(0, (int) ($data['broken_links_count'] ?? 0)) / $checkedLinksCount;
+
+            if ($brokenLinksRatio > 0.5) {
+                $linksScore -= 50;
+            } elseif ($brokenLinksRatio > 0.2) {
+                $linksScore -= 35;
+            } elseif ($brokenLinksRatio > 0.05) {
+                $linksScore -= 20;
+            } elseif ($brokenLinksRatio > 0) {
+                $linksScore -= 5;
+            }
+        }
         $linksScore -= min(15, ((int) ($data['empty_anchor_links_count'] ?? 0)) * 3);
         $linksScore -= min(15, ((int) ($data['generic_anchor_links_count'] ?? 0)) * 3);
 
@@ -195,7 +208,10 @@ class SeoScoringService
         $linksScore = $this->clamp($linksScore);
         $performanceScore = $this->clamp($performanceScore);
         $globalScore = (int) round(
-            ($technicalScore + $contentScore + $linksScore + $performanceScore) / 4,
+            ($technicalScore * 0.35)
+            + ($contentScore * 0.35)
+            + ($linksScore * 0.15)
+            + ($performanceScore * 0.15),
         );
 
         return [

@@ -1171,7 +1171,7 @@ class AuditApiTest extends TestCase
             ->assertJsonPath('raw_data.checked_links_count', 1)
             ->assertJsonPath('raw_data.broken_links_count', 1)
             ->assertJsonPath('raw_data.broken_links_sample.0', 'https://example.com/broken')
-            ->assertJsonPath('audit.links_score', 85)
+            ->assertJsonPath('audit.links_score', 50)
             ->assertJsonFragment([
                 'title' => 'Broken links found',
                 'category' => 'links',
@@ -1676,7 +1676,7 @@ class AuditApiTest extends TestCase
             ->assertJsonFragment(['title' => 'Page does not use HTTPS']);
     }
 
-    public function test_global_score_is_the_rounded_average_of_category_scores(): void
+    public function test_global_score_is_the_rounded_weighted_average_of_category_scores(): void
     {
         $this->responseHtml = '<html lang="en"><head><link rel="canonical" href="/page"><meta name="viewport" content="width=device-width"><meta name="description" content="Present"><script type="application/ld+json">{"@type":"WebPage"}</script></head><body><h1>Heading</h1><h2>Section</h2></body></html>';
         Sanctum::actingAs(User::factory()->create());
@@ -1689,7 +1689,7 @@ class AuditApiTest extends TestCase
             ->assertJsonPath('audit.content_score', 50)
             ->assertJsonPath('audit.links_score', 70)
             ->assertJsonPath('audit.performance_score', 100)
-            ->assertJsonPath('audit.global_score', 80);
+            ->assertJsonPath('audit.global_score', 78);
     }
 
     public function test_all_calculated_scores_remain_between_zero_and_one_hundred(): void

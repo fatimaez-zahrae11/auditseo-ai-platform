@@ -56,16 +56,78 @@ class SeoScoringServiceTest extends TestCase
 
         $scores = $service->calculate([
             ...$this->completeData(),
+            'checked_links_count' => 10,
             'broken_links_count' => 10,
             'empty_anchor_links_count' => 20,
             'generic_anchor_links_count' => 20,
         ]);
 
-        $this->assertSame(10, $scores['links_score']);
+        $this->assertSame(20, $scores['links_score']);
         foreach ($scores as $score) {
             $this->assertGreaterThanOrEqual(0, $score);
             $this->assertLessThanOrEqual(100, $score);
         }
+    }
+
+    public function test_broken_link_penalty_is_based_on_the_checked_link_ratio(): void
+    {
+        $service = new SeoScoringService;
+
+        $cases = [
+            ['checked' => 0, 'broken' => 10, 'expected' => 100],
+            ['checked' => 100, 'broken' => 1, 'expected' => 95],
+            ['checked' => 100, 'broken' => 6, 'expected' => 80],
+            ['checked' => 100, 'broken' => 21, 'expected' => 65],
+            ['checked' => 100, 'broken' => 51, 'expected' => 50],
+        ];
+
+        foreach ($cases as $case) {
+            $scores = $service->calculate([
+                ...$this->completeData(),
+                'checked_links_count' => $case['checked'],
+                'broken_links_count' => $case['broken'],
+            ]);
+
+            $this->assertSame($case['expected'], $scores['links_score']);
+        }
+    }
+
+    public function test_declared_sitemap_receives_a_smaller_missing_sitemap_penalty(): void
+    {
+        $service = new SeoScoringService;
+
+        $undisclosedScores = $service->calculate([
+            ...$this->completeData(),
+            'sitemap_xml_found' => false,
+            'robots_txt_sitemap_urls' => [],
+        ]);
+        $declaredScores = $service->calculate([
+            ...$this->completeData(),
+            'sitemap_xml_found' => false,
+            'robots_txt_sitemap_urls' => ['https://example.com/sitemap-index.xml'],
+        ]);
+
+        $this->assertSame(80, $undisclosedScores['technical_score']);
+        $this->assertSame(90, $declaredScores['technical_score']);
+    }
+
+    public function test_global_score_uses_weighted_category_scores(): void
+    {
+        $service = new SeoScoringService;
+
+        $scores = $service->calculate([
+            ...$this->completeData(),
+            'uses_https' => false,
+            'word_count' => 200,
+            'links_count' => 0,
+            'response_time_ms' => 2501,
+        ]);
+
+        $this->assertSame(60, $scores['technical_score']);
+        $this->assertSame(80, $scores['content_score']);
+        $this->assertSame(70, $scores['links_score']);
+        $this->assertSame(80, $scores['performance_score']);
+        $this->assertSame(72, $scores['global_score']);
     }
 
     public function test_on_page_content_problems_reduce_and_clamp_the_content_score(): void
@@ -200,6 +262,7 @@ class SeoScoringServiceTest extends TestCase
             'uses_https' => true,
             'robots_txt_found' => true,
             'sitemap_xml_found' => true,
+            'robots_txt_sitemap_urls' => [],
             'robots_txt_allows_audited_url' => true,
             'sitemap_xml_is_valid' => true,
             'sitemap_non_https_urls_count' => 0,
@@ -227,6 +290,8 @@ class SeoScoringServiceTest extends TestCase
             'viewport_found' => true,
             'html_lang' => 'en',
             'links_count' => 1,
+            'checked_links_count' => 0,
+            'broken_links_count' => 0,
             'response_time_ms' => 100,
             'page_size_bytes' => 1000,
             'is_html_response' => true,
