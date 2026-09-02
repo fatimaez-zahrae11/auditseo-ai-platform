@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Support\EmailAddress;
+use App\Support\ProductionConfigurationValidator;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
@@ -69,8 +70,12 @@ class AppServiceProvider extends ServiceProvider
     /**
      * Bootstrap any application services.
      */
-    public function boot(): void
+    public function boot(ProductionConfigurationValidator $productionConfiguration): void
     {
+        if ($this->app->environment('production')) {
+            $productionConfiguration->validate();
+        }
+
         RateLimiter::for('api-public', function (Request $request) {
             return Limit::perMinute(self::PUBLIC_API_REQUESTS_PER_MINUTE)
                 ->by('api-public:'.$request->ip());

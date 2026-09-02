@@ -2,6 +2,8 @@
 
 return [
     'access_logs_days' => (int) env('RETENTION_ACCESS_LOGS_DAYS', 90),
+    'auth_audit_logs_days' => (int) env('RETENTION_AUTH_AUDIT_LOGS_DAYS', 365),
+    'api_usage_logs_days' => (int) env('RETENTION_API_USAGE_LOGS_DAYS', 90),
     'web_analytics_events_days' => (int) env('RETENTION_WEB_ANALYTICS_EVENTS_DAYS', 365),
     'action_logs_days' => (int) env('RETENTION_ACTION_LOGS_DAYS', 365),
     'admin_action_logs_days' => (int) env('RETENTION_ADMIN_ACTION_LOGS_DAYS', 365),

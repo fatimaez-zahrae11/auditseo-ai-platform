@@ -5,9 +5,12 @@ namespace Tests\Feature;
 use App\Models\AccessLog;
 use App\Models\ActionLog;
 use App\Models\AdminActionLog;
+use App\Models\ApiUsageLog;
+use App\Models\AuthAuditLog;
 use App\Models\IpGeolocation;
 use App\Models\User;
 use App\Models\WebAnalyticsEvent;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -23,6 +26,8 @@ class DataRetentionTest extends TestCase
         $this->travelTo('2026-09-02 12:00:00');
         config([
             'retention.access_logs_days' => 10,
+            'retention.auth_audit_logs_days' => 10,
+            'retention.api_usage_logs_days' => 10,
             'retention.action_logs_days' => 10,
             'retention.admin_action_logs_days' => 10,
             'retention.web_analytics_events_days' => 10,
@@ -31,6 +36,8 @@ class DataRetentionTest extends TestCase
         $user = User::factory()->create();
 
         [$oldAccess, $freshAccess] = $this->accessLogs($user);
+        [$oldAuth, $freshAuth] = $this->authAuditLogs($user);
+        [$oldApiUsage, $freshApiUsage] = $this->apiUsageLogs($user);
         [$oldAction, $freshAction] = $this->actionLogs($user);
         [$oldAdminAction, $freshAdminAction] = $this->adminActionLogs($user);
         [$oldAnalytics, $freshAnalytics] = $this->analyticsEvents();
@@ -39,6 +46,8 @@ class DataRetentionTest extends TestCase
         $exitCode = Artisan::call('model:prune', [
             '--model' => [
                 AccessLog::class,
+                AuthAuditLog::class,
+                ApiUsageLog::class,
                 ActionLog::class,
                 AdminActionLog::class,
                 WebAnalyticsEvent::class,
@@ -47,10 +56,10 @@ class DataRetentionTest extends TestCase
         ]);
 
         $this->assertSame(0, $exitCode);
-        foreach ([$oldAccess, $oldAction, $oldAdminAction, $oldAnalytics, $oldIp] as $expired) {
+        foreach ([$oldAccess, $oldAuth, $oldApiUsage, $oldAction, $oldAdminAction, $oldAnalytics, $oldIp] as $expired) {
             $this->assertDatabaseMissing($expired->getTable(), ['id' => $expired->id]);
         }
-        foreach ([$freshAccess, $freshAction, $freshAdminAction, $freshAnalytics, $freshIp] as $retained) {
+        foreach ([$freshAccess, $freshAuth, $freshApiUsage, $freshAction, $freshAdminAction, $freshAnalytics, $freshIp] as $retained) {
             $this->assertDatabaseHas($retained->getTable(), ['id' => $retained->id]);
         }
     }
@@ -80,6 +89,41 @@ class DataRetentionTest extends TestCase
             AccessLog::query()->create([...$attributes, 'created_at' => now()->subDays(11)]),
             AccessLog::query()->create([...$attributes, 'created_at' => now()->subDays(9)]),
         ];
+    }
+
+    /** @return array{AuthAuditLog, AuthAuditLog} */
+    private function authAuditLogs(User $user): array
+    {
+        $attributes = [
+            'user_id' => $user->id,
+            'email' => $user->email,
+            'event' => AuthAuditLog::EVENT_LOGIN,
+            'status' => AuthAuditLog::STATUS_SUCCESS,
+        ];
+
+        $old = AuthAuditLog::query()->create($attributes);
+        $fresh = AuthAuditLog::query()->create($attributes);
+        $this->setTimestamps($old, now()->subDays(11));
+        $this->setTimestamps($fresh, now()->subDays(9));
+
+        return [$old, $fresh];
+    }
+
+    /** @return array{ApiUsageLog, ApiUsageLog} */
+    private function apiUsageLogs(User $user): array
+    {
+        $attributes = [
+            'user_id' => $user->id,
+            'provider' => 'test-provider',
+            'status' => 'success',
+        ];
+
+        $old = ApiUsageLog::query()->create($attributes);
+        $fresh = ApiUsageLog::query()->create($attributes);
+        $this->setTimestamps($old, now()->subDays(11));
+        $this->setTimestamps($fresh, now()->subDays(9));
+
+        return [$old, $fresh];
     }
 
     /** @return array{ActionLog, ActionLog} */
@@ -179,5 +223,13 @@ class DataRetentionTest extends TestCase
             'exception' => 'Sanitized test exception.',
             'failed_at' => $failedAt,
         ];
+    }
+
+    private function setTimestamps(Model $model, mixed $timestamp): void
+    {
+        $model::withoutTimestamps(fn () => $model->forceFill([
+            'created_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ])->save());
     }
 }

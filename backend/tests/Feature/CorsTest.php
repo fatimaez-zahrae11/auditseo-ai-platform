@@ -55,4 +55,24 @@ class CorsTest extends TestCase
             ->assertOk()
             ->assertJsonPath('status', 'ok');
     }
+
+    public function test_bearer_authorization_header_is_allowed_without_credentials_mode(): void
+    {
+        Config::set('cors.allowed_origins', [self::FRONTEND_ORIGIN]);
+
+        $response = $this->call('OPTIONS', '/api/me', server: [
+            'HTTP_ORIGIN' => self::FRONTEND_ORIGIN,
+            'HTTP_ACCESS_CONTROL_REQUEST_METHOD' => 'GET',
+            'HTTP_ACCESS_CONTROL_REQUEST_HEADERS' => 'Authorization, Content-Type',
+        ]);
+
+        $response
+            ->assertNoContent()
+            ->assertHeader('Access-Control-Allow-Origin', self::FRONTEND_ORIGIN);
+        $this->assertStringContainsString(
+            'authorization',
+            strtolower((string) $response->headers->get('Access-Control-Allow-Headers')),
+        );
+        $this->assertFalse($response->headers->has('Access-Control-Allow-Credentials'));
+    }
 }
