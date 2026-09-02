@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Exceptions\AuditProcessingException;
+use App\Exceptions\CrawlUnavailableException;
 use App\Jobs\RunSeoAuditJob;
 use App\Models\ActionLog;
 use App\Models\Audit;
@@ -441,6 +442,66 @@ class AuditApiTest extends TestCase
         Log::shouldHaveReceived('warning')->twice();
     }
 
+    public function test_blocked_primary_responses_are_stored_and_exposed_as_a_safe_crawl_failure(): void
+    {
+        $user = User::factory()->create();
+        Sanctum::actingAs($user);
+
+        foreach ([403, 429] as $status) {
+            $this->pageStatus = $status;
+            $this->responseHtml = 'Sensitive provider response that must not be exposed.';
+
+            $this->processAuditThroughJob(['url' => "https://example.com/blocked-{$status}"])
+                ->assertStatus(502)
+                ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
+
+            $audit = Audit::latest('id')->firstOrFail();
+            $this->assertSame(Audit::STATUS_FAILED, $audit->status);
+            $this->assertSame(CrawlUnavailableException::PUBLIC_MESSAGE, $audit->failure_reason);
+
+            $this->getJson("/api/audits/{$audit->id}")
+                ->assertOk()
+                ->assertJsonPath('audit.status', Audit::STATUS_FAILED)
+                ->assertJsonPath('audit.failure_message', CrawlUnavailableException::PUBLIC_MESSAGE)
+                ->assertJsonMissingPath('audit.failure_reason')
+                ->assertDontSee('Sensitive provider response');
+        }
+    }
+
+    public function test_connection_failure_is_stored_as_a_safe_crawl_failure(): void
+    {
+        $this->replaceHttpFake(Http::failedConnection('Connection timed out with token=secret123.'));
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->processAuditThroughJob(['url' => 'https://example.com/page'])
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
+
+        $audit = Audit::sole();
+        $this->assertSame(CrawlUnavailableException::PUBLIC_MESSAGE, $audit->failure_reason);
+        $this->assertStringNotContainsString('secret123', $audit->failure_reason);
+    }
+
+    public function test_too_many_redirects_are_stored_as_a_safe_crawl_failure(): void
+    {
+        $currentUrl = 'https://example.com/start';
+        for ($index = 0; $index <= 10; $index++) {
+            $nextUrl = "https://example.com/redirect-{$index}";
+            $this->redirects[$currentUrl] = ['status' => 302, 'location' => $nextUrl];
+            $currentUrl = $nextUrl;
+        }
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->processAuditThroughJob(['url' => 'https://example.com/start'])
+            ->assertStatus(502)
+            ->assertExactJson(['message' => 'Unable to fetch the requested URL.']);
+
+        $this->assertDatabaseHas('audits', [
+            'status' => Audit::STATUS_FAILED,
+            'failure_reason' => CrawlUnavailableException::PUBLIC_MESSAGE,
+        ]);
+    }
+
     public function test_crawler_fails_safely_without_falling_back_when_dns_pinning_is_unavailable(): void
     {
         $this->app->instance(
@@ -492,7 +553,7 @@ class AuditApiTest extends TestCase
         $this->assertLessThan(6_000_000, $progress->bytes);
         $this->assertDatabaseHas('audits', [
             'status' => Audit::STATUS_FAILED,
-            'failure_reason' => RunSeoAuditJob::GENERIC_FAILURE_REASON,
+            'failure_reason' => CrawlUnavailableException::PUBLIC_MESSAGE,
         ]);
     }
 

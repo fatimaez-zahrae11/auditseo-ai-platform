@@ -7,7 +7,10 @@ import type {
   SeoIssue,
   UserDashboardData,
 } from '../types';
-import { PUBLIC_AUDIT_FAILURE_MESSAGE } from '../utils/publicApiErrors';
+import {
+  PUBLIC_AUDIT_FAILURE_MESSAGE,
+  PUBLIC_CRAWL_UNAVAILABLE_MESSAGE,
+} from '../utils/publicApiErrors';
 import { apiRequest, getAuthGeneration, subscribeToAuthState } from './apiClient';
 
 interface BackendDomain {
@@ -41,6 +44,7 @@ interface BackendAudit {
   started_at?: unknown;
   completed_at?: unknown;
   failed_at?: unknown;
+  failure_message?: unknown;
   failure_reason?: unknown;
   error_message?: unknown;
   domain?: BackendDomain | null;
@@ -163,6 +167,12 @@ const mapRawData = (value: unknown): Record<string, unknown> | undefined => (
     : undefined
 );
 
+const publicFailureMessage = (value: unknown) => (
+  value === PUBLIC_CRAWL_UNAVAILABLE_MESSAGE
+    ? PUBLIC_CRAWL_UNAVAILABLE_MESSAGE
+    : PUBLIC_AUDIT_FAILURE_MESSAGE
+);
+
 export const mapBackendAudit = (audit: BackendAudit): SeoAudit => {
   const requestedUrl = stringValue(audit.requested_url, stringValue(audit.domain?.url));
   const rawData = mapRawData(audit.raw_data);
@@ -187,7 +197,7 @@ export const mapBackendAudit = (audit: BackendAudit): SeoAudit => {
     completedAt: optionalString(audit.completed_at),
     startedAt: optionalString(audit.started_at),
     failedAt: optionalString(audit.failed_at),
-    failureMessage: status === 'failed' ? PUBLIC_AUDIT_FAILURE_MESSAGE : undefined,
+    failureMessage: status === 'failed' ? publicFailureMessage(audit.failure_message) : undefined,
     issues: Array.isArray(audit.issues) ? audit.issues.map(mapIssue) : [],
     rawData,
     crawlDurationMs: optionalNumber(rawData?.response_time_ms),

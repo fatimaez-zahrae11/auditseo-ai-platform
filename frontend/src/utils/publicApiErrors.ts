@@ -49,3 +49,5 @@ export const getPublicApiErrorMessage = (
 };
 
 export const PUBLIC_AUDIT_FAILURE_MESSAGE = 'The audit could not be completed for this URL. Please verify the site is reachable and try again.';
+
+export const PUBLIC_CRAWL_UNAVAILABLE_MESSAGE = 'This website could not be analyzed because it blocked or refused automated crawling. Please try another public website.';

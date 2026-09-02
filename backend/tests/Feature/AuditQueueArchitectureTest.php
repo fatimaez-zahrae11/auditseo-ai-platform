@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Exceptions\AuditProcessingException;
+use App\Exceptions\CrawlUnavailableException;
 use App\Jobs\RunSeoAuditJob;
 use App\Models\Audit;
 use App\Models\Domain;
@@ -13,6 +14,7 @@ use App\Services\Seo\SeoScoringService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
+use Illuminate\Queue\TimeoutExceededException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
@@ -415,6 +417,28 @@ class AuditQueueArchitectureTest extends TestCase
         ]);
     }
 
+    public function test_worker_timeout_callback_stores_only_the_safe_crawl_failure_reason(): void
+    {
+        $audit = $this->createAudit([
+            'status' => Audit::STATUS_RUNNING,
+            'started_at' => now(),
+        ]);
+        $exception = new TimeoutExceededException('Worker timed out with token=secret123.');
+        Log::spy();
+
+        (new RunSeoAuditJob($audit->id))->failed($exception);
+        $audit->refresh();
+
+        $this->assertSame(Audit::STATUS_FAILED, $audit->status);
+        $this->assertSame(CrawlUnavailableException::PUBLIC_MESSAGE, $audit->failure_reason);
+        $this->assertStringNotContainsString('secret123', $audit->failure_reason);
+
+        Log::shouldHaveReceived('warning')->once()->with('SEO audit job failed.', [
+            'audit_id' => $audit->id,
+            'exception' => TimeoutExceededException::class,
+        ]);
+    }
+
     public function test_failure_reason_is_not_exposed_by_the_audit_api(): void
     {
         $user = User::factory()->create();
@@ -428,7 +452,8 @@ class AuditQueueArchitectureTest extends TestCase
         $this->getJson("/api/audits/{$audit->id}")
             ->assertOk()
             ->assertJsonPath('audit.status', Audit::STATUS_FAILED)
-            ->assertJsonMissingPath('audit.failure_reason');
+            ->assertJsonMissingPath('audit.failure_reason')
+            ->assertJsonMissingPath('audit.failure_message');
     }
 
     /**

@@ -3,11 +3,14 @@
 namespace App\Jobs;
 
 use App\Exceptions\AuditProcessingException;
+use App\Exceptions\CrawlUnavailableException;
 use App\Models\Audit;
 use App\Services\Audit\AuditProcessingService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
+use Illuminate\Queue\TimeoutExceededException;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -56,7 +59,10 @@ class RunSeoAuditJob implements ShouldQueue
 
             // Do not retain the original exception as a previous exception:
             // Laravel persists the full exception chain for failed jobs.
-            throw new AuditProcessingException($exception instanceof ValidationException);
+            throw new AuditProcessingException(
+                $exception instanceof ValidationException,
+                $this->safeFailureReason($exception),
+            );
         }
     }
 
@@ -69,12 +75,27 @@ class RunSeoAuditJob implements ShouldQueue
                 'status' => Audit::STATUS_FAILED,
                 'completed_at' => null,
                 'failed_at' => now(),
-                'failure_reason' => self::GENERIC_FAILURE_REASON,
+                'failure_reason' => $this->safeFailureReason($exception),
             ]);
 
         Log::warning('SEO audit job failed.', [
             'audit_id' => $this->auditId,
             'exception' => $exception::class,
         ]);
+    }
+
+    private function safeFailureReason(Throwable $exception): string
+    {
+        if ($exception instanceof AuditProcessingException) {
+            return $exception->failureReason();
+        }
+
+        if ($exception instanceof CrawlUnavailableException
+            || $exception instanceof ConnectionException
+            || $exception instanceof TimeoutExceededException) {
+            return CrawlUnavailableException::PUBLIC_MESSAGE;
+        }
+
+        return self::GENERIC_FAILURE_REASON;
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Exceptions\CrawlUnavailableException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\IndexAuditRequest;
 use App\Http\Requests\StoreAuditRequest;
@@ -171,8 +172,14 @@ class AuditController extends Controller
             ->whereHas('domain', fn ($query) => $query->where('user_id', $request->user()->id))
             ->findOrFail($id);
 
+        $payload = $audit->toArray();
+        if ($audit->status === Audit::STATUS_FAILED
+            && $audit->failure_reason === CrawlUnavailableException::PUBLIC_MESSAGE) {
+            $payload['failure_message'] = CrawlUnavailableException::PUBLIC_MESSAGE;
+        }
+
         return response()->json([
-            'audit' => $audit,
+            'audit' => $payload,
         ]);
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services\Seo;
 
+use App\Exceptions\CrawlUnavailableException;
 use App\Security\CurlTransportCapabilities;
 use App\Security\PublicUrlPolicy;
 use DOMDocument;
@@ -150,6 +151,10 @@ class SeoCrawlerService
                 self::MAX_HTML_BYTES,
             );
 
+            if (in_array($response->status(), [403, 429], true)) {
+                throw new CrawlUnavailableException;
+            }
+
             if (! $this->isRedirect($response)) {
                 return [$response, $body, $currentUrl, $redirectCount];
             }
@@ -160,7 +165,7 @@ class SeoCrawlerService
             }
 
             if ($redirectCount >= self::MAX_REDIRECTS) {
-                throw new RuntimeException('The page exceeded the redirect limit.');
+                throw new CrawlUnavailableException;
             }
 
             $currentUrl = $this->resolveUrl($currentUrl, $location);
@@ -1576,7 +1581,7 @@ class SeoCrawlerService
             $source = $response->toPsrResponse()->getBody();
             $temporary = fopen("php://temp/maxmemory:{$maxBytes}", 'w+b');
             if ($temporary === false) {
-                throw new RuntimeException('Unable to buffer the downloaded resource.');
+                throw new CrawlUnavailableException;
             }
 
             try {
@@ -1591,23 +1596,23 @@ class SeoCrawlerService
                             break;
                         }
 
-                        throw new RuntimeException('Unable to read the downloaded resource.');
+                        throw new CrawlUnavailableException;
                     }
 
                     $downloadedBytes += strlen($chunk);
                     if ($downloadedBytes > $maxBytes) {
-                        throw new RuntimeException('The downloaded resource exceeded the size limit.');
+                        throw new CrawlUnavailableException;
                     }
 
                     if (fwrite($temporary, $chunk) !== strlen($chunk)) {
-                        throw new RuntimeException('Unable to buffer the downloaded resource.');
+                        throw new CrawlUnavailableException;
                     }
                 }
 
                 rewind($temporary);
                 $body = stream_get_contents($temporary);
                 if ($body === false) {
-                    throw new RuntimeException('Unable to read the buffered resource.');
+                    throw new CrawlUnavailableException;
                 }
 
                 return [$response, $body];
@@ -1640,7 +1645,7 @@ class SeoCrawlerService
                     if (ctype_digit($value)
                         && (strlen($value) > strlen($limit)
                             || (strlen($value) === strlen($limit) && strcmp($value, $limit) > 0))) {
-                        throw new RuntimeException('The downloaded resource exceeded the size limit.');
+                        throw new CrawlUnavailableException;
                     }
                 }
             }
