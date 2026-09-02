@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertCircle, ArrowRight, Check, Loader2, Lock, Mail, User } from 'lucide-react';
+import { AlertCircle, Check, Eye, EyeOff, Loader2, Lock, Mail, User } from 'lucide-react';
 import { AuthFormLayout } from '../../components/layout/AuthFormLayout';
 import { useApp } from '../../context/AppContext';
 import { ApiError } from '../../services/apiClient';
@@ -19,6 +19,8 @@ export const RegisterPage: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [passwordConfirmation, setPasswordConfirmation] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showPasswordConfirmation, setShowPasswordConfirmation] = useState(false);
   const [errors, setErrors] = useState<RegisterErrors>({});
   const [isLoading, setIsLoading] = useState(false);
 
@@ -60,46 +62,74 @@ export const RegisterPage: React.FC = () => {
     }
   };
 
-  const fieldClass = (hasError: boolean) => `min-h-[52px] w-full rounded-2xl border bg-[#F1F4F6] py-3 pl-11 pr-4 text-sm font-semibold text-[#020C0F] outline-none transition-all placeholder:text-[#8A9692] focus:bg-white focus:ring-4 focus:ring-[#06D6A0]/10 disabled:opacity-60 ${hasError ? 'border-[#FB7185]' : 'border-transparent focus:border-[#06D6A0]'}`;
+  const fieldClass = (hasError: boolean) => `auth-input min-h-[52px] w-full rounded-2xl py-3 pl-11 pr-4 text-sm font-semibold ${hasError ? 'auth-input-error' : ''}`;
+  const passwordFieldClass = (hasError: boolean) => `auth-input min-h-[52px] w-full rounded-2xl py-3 pl-11 pr-12 text-sm font-semibold ${hasError ? 'auth-input-error' : ''}`;
 
   return (
     <AuthFormLayout activeTab="register">
-      <div className="mt-8">
-        <div className="text-center">
-          <h1 className="text-3xl font-black tracking-[-0.035em] text-[#020C0F] sm:text-[2rem]">Create your account</h1>
-          <p className="mt-2 text-sm font-semibold text-[#0C765F]">Start analyzing your website today.</p>
+      <div className="mt-5 text-center">
+        <h1 className="text-3xl font-semibold tracking-[-0.04em] text-white sm:text-[2.35rem]">
+          Create your <span className="auth-accent-text">account</span>
+        </h1>
+        <p className="mx-auto mt-3 max-w-sm text-xs font-medium leading-5 text-white/52 sm:text-sm sm:leading-6">
+          Start tracking technical SEO issues, scores,<br className="hidden sm:block" /> and AI-powered recommendations.
+        </p>
+      </div>
+
+      {errors.form ? (
+        <div className="mt-5 flex items-start gap-2 rounded-2xl border border-rose-300/25 bg-rose-950/35 p-3.5 text-xs font-semibold text-rose-100" role="alert">
+          <AlertCircle className="h-4 w-4 shrink-0 text-rose-300" />{errors.form}
+        </div>
+      ) : null}
+
+      <form onSubmit={(event) => void handleSubmit(event)} className="mt-6 space-y-3.5" noValidate>
+        <div>
+          <label htmlFor="register-name-input" className="mb-1.5 block text-xs font-bold text-white/78">Full name</label>
+          <div className="relative">
+            <User className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-orange-200/55" />
+            <input id="register-name-input" autoComplete="name" value={name} onChange={(event) => { setName(event.target.value); setErrors((current) => ({ ...current, name: undefined, form: undefined })); }} placeholder="Enter your full name" disabled={isLoading} aria-invalid={Boolean(errors.name)} className={fieldClass(Boolean(errors.name))} />
+          </div>
+          {errors.name ? <p className="mt-1.5 text-[11px] font-bold text-rose-200">{errors.name}</p> : null}
         </div>
 
-        {errors.form ? <div className="mt-6 flex items-start gap-2 rounded-2xl border border-[#FDA4AF] bg-[#FFF1F2] p-3.5 text-xs font-semibold text-[#9F1239]" role="alert"><AlertCircle className="h-4 w-4 shrink-0" />{errors.form}</div> : null}
+        <div>
+          <label htmlFor="register-email-input" className="mb-1.5 block text-xs font-bold text-white/78">Email</label>
+          <div className="relative">
+            <Mail className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-orange-200/55" />
+            <input id="register-email-input" type="email" autoComplete="email" value={email} onChange={(event) => { setEmail(event.target.value); setErrors((current) => ({ ...current, email: undefined, form: undefined })); }} placeholder="Enter your email" disabled={isLoading} aria-invalid={Boolean(errors.email)} className={fieldClass(Boolean(errors.email))} />
+          </div>
+          {errors.email ? <p className="mt-1.5 text-[11px] font-bold text-rose-200">{errors.email}</p> : null}
+        </div>
 
-        <form onSubmit={(event) => void handleSubmit(event)} className="mt-7 space-y-4" noValidate>
-          <div>
-            <label htmlFor="register-name-input" className="mb-2 block text-xs font-extrabold text-[#263934]">Full name</label>
-            <div className="relative"><User className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#71807C]" /><input id="register-name-input" autoComplete="name" value={name} onChange={(event) => { setName(event.target.value); setErrors((current) => ({ ...current, name: undefined, form: undefined })); }} placeholder="Alex Morgan" disabled={isLoading} className={fieldClass(Boolean(errors.name))} /></div>
-            {errors.name ? <p className="mt-1.5 text-[11px] font-bold text-[#BE123C]">{errors.name}</p> : null}
+        <div>
+          <label htmlFor="register-password-input" className="mb-1.5 block text-xs font-bold text-white/78">Password</label>
+          <div className="relative">
+            <Lock className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-orange-200/55" />
+            <input id="register-password-input" type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={password} onChange={(event) => { setPassword(event.target.value); setErrors((current) => ({ ...current, password: undefined, form: undefined })); }} placeholder="Create a password" disabled={isLoading} aria-invalid={Boolean(errors.password)} className={passwordFieldClass(Boolean(errors.password))} />
+            <button type="button" onClick={() => setShowPassword((visible) => !visible)} disabled={isLoading} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} className="auth-visibility-toggle absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg disabled:opacity-50">
+              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
           </div>
-          <div>
-            <label htmlFor="register-email-input" className="mb-2 block text-xs font-extrabold text-[#263934]">Email address</label>
-            <div className="relative"><Mail className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#71807C]" /><input id="register-email-input" type="email" autoComplete="email" value={email} onChange={(event) => { setEmail(event.target.value); setErrors((current) => ({ ...current, email: undefined, form: undefined })); }} placeholder="name@company.com" disabled={isLoading} className={fieldClass(Boolean(errors.email))} /></div>
-            {errors.email ? <p className="mt-1.5 text-[11px] font-bold text-[#BE123C]">{errors.email}</p> : null}
-          </div>
-          <div>
-            <label htmlFor="register-password-input" className="mb-2 block text-xs font-extrabold text-[#263934]">Password</label>
-            <div className="relative"><Lock className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#71807C]" /><input id="register-password-input" type="password" autoComplete="new-password" value={password} onChange={(event) => { setPassword(event.target.value); setErrors((current) => ({ ...current, password: undefined, form: undefined })); }} placeholder="Create a password" disabled={isLoading} className={fieldClass(Boolean(errors.password))} /></div>
-            <p className={`mt-1.5 text-[11px] ${errors.password ? 'font-bold text-[#BE123C]' : 'text-[#71807C]'}`}>{errors.password || 'Minimum 8 characters, at least one uppercase letter and one digit.'}</p>
-          </div>
-          <div>
-            <label htmlFor="register-password-confirmation-input" className="mb-2 block text-xs font-extrabold text-[#263934]">Confirm password</label>
-            <div className="relative"><Check className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#71807C]" /><input id="register-password-confirmation-input" type="password" autoComplete="new-password" value={passwordConfirmation} onChange={(event) => { setPasswordConfirmation(event.target.value); setErrors((current) => ({ ...current, confirmation: undefined, form: undefined })); }} placeholder="Repeat your password" disabled={isLoading} className={fieldClass(Boolean(errors.confirmation))} /></div>
-            {errors.confirmation ? <p className="mt-1.5 text-[11px] font-bold text-[#BE123C]">{errors.confirmation}</p> : null}
-          </div>
+          <p className={`mt-1.5 text-[10px] leading-4 ${errors.password ? 'font-bold text-rose-200' : 'text-white/40'}`}>{errors.password || 'Minimum 8 characters, at least one uppercase letter and one digit.'}</p>
+        </div>
 
-          <button id="register-submit-btn" type="submit" disabled={isLoading} className="inline-flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl bg-[#0C4137] px-5 text-sm font-black text-white shadow-[0_12px_28px_rgba(12,65,55,0.22)] transition-all hover:-translate-y-0.5 hover:bg-[#0A5849] disabled:cursor-not-allowed disabled:translate-y-0 disabled:opacity-60">
-            {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
-            {isLoading ? 'Creating account...' : 'Create Account'}
-          </button>
-        </form>
-      </div>
+        <div>
+          <label htmlFor="register-password-confirmation-input" className="mb-1.5 block text-xs font-bold text-white/78">Confirm password</label>
+          <div className="relative">
+            <Check className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-orange-200/55" />
+            <input id="register-password-confirmation-input" type={showPasswordConfirmation ? 'text' : 'password'} autoComplete="new-password" value={passwordConfirmation} onChange={(event) => { setPasswordConfirmation(event.target.value); setErrors((current) => ({ ...current, confirmation: undefined, form: undefined })); }} placeholder="Repeat your password" disabled={isLoading} aria-invalid={Boolean(errors.confirmation)} className={passwordFieldClass(Boolean(errors.confirmation))} />
+            <button type="button" onClick={() => setShowPasswordConfirmation((visible) => !visible)} disabled={isLoading} aria-label={showPasswordConfirmation ? 'Hide password confirmation' : 'Show password confirmation'} aria-pressed={showPasswordConfirmation} className="auth-visibility-toggle absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg disabled:opacity-50">
+              {showPasswordConfirmation ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+          {errors.confirmation ? <p className="mt-1.5 text-[11px] font-bold text-rose-200">{errors.confirmation}</p> : null}
+        </div>
+
+        <button id="register-submit-btn" type="submit" disabled={isLoading} className="auth-primary-button auth-orange-button inline-flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl px-5 text-sm font-bold">
+          {isLoading ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" /> : null}
+          {isLoading ? 'Signing up...' : 'Sign Up'}
+        </button>
+      </form>
     </AuthFormLayout>
   );
 };

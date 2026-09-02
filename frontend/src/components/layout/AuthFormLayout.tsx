@@ -1,62 +1,61 @@
 import type { ReactNode } from 'react';
-import { ShieldCheck } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { AppLogo } from '../ui/AppLogo';
+import { AuthCardBrand, AuthLayout } from './AuthLayout';
 
 interface AuthFormLayoutProps {
   activeTab: 'login' | 'register';
   children: ReactNode;
 }
 
+function GoogleMark() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4 shrink-0">
+      <path fill="#4285F4" d="M21.6 12.23c0-.71-.06-1.4-.2-2.06H12v3.9h5.37a4.6 4.6 0 0 1-1.99 3.01v2.54h3.23c1.89-1.74 2.99-4.31 2.99-7.39Z" />
+      <path fill="#34A853" d="M12 22c2.7 0 4.96-.89 6.61-2.38l-3.23-2.54c-.9.6-2.04.96-3.38.96-2.61 0-4.82-1.76-5.61-4.13H3.05v2.62A9.99 9.99 0 0 0 12 22Z" />
+      <path fill="#FBBC05" d="M6.39 13.91A6.02 6.02 0 0 1 6.07 12c0-.66.11-1.31.32-1.91V7.47H3.05A10 10 0 0 0 2 12c0 1.61.38 3.14 1.05 4.53l3.34-2.62Z" />
+      <path fill="#EA4335" d="M12 5.96c1.47 0 2.78.5 3.82 1.49l2.86-2.87A9.6 9.6 0 0 0 12 2a9.99 9.99 0 0 0-8.95 5.47l3.34 2.62C7.18 7.72 9.39 5.96 12 5.96Z" />
+    </svg>
+  );
+}
+
 export function AuthFormLayout({ activeTab, children }: AuthFormLayoutProps) {
   const { setCurrentView } = useApp();
-
-  const tabClass = (tab: 'login' | 'register') => `flex min-h-11 flex-1 items-center justify-center rounded-xl px-4 text-sm font-extrabold transition-all ${
-    activeTab === tab
-      ? 'bg-white text-[#0C4137] shadow-[0_4px_14px_rgba(2,12,15,0.10)]'
-      : 'text-[#71807C] hover:text-[#0C4137]'
-  }`;
+  const isLogin = activeTab === 'login';
 
   return (
-    <main className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#E6FBF6] px-4 py-6 text-[#020C0F] sm:px-6 sm:py-10">
-      <div className="pointer-events-none absolute -left-24 -top-24 h-72 w-72 rounded-full bg-[#06D6A0]/15 blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-32 -right-20 h-96 w-96 rounded-full bg-[#0C4137]/10 blur-3xl" />
-
-      <section className="relative w-full max-w-[600px] overflow-hidden rounded-[2rem] border border-[#0C4137]/10 border-t-4 border-t-[#06D6A0] bg-white px-5 py-7 shadow-[0_28px_80px_rgba(2,12,15,0.14)] sm:px-10 sm:py-9">
-        <header className="text-center">
-          <AppLogo size={56} className="mx-auto drop-shadow-md" />
-          <p className="mt-3 text-lg font-black tracking-[-0.025em] text-[#020C0F]">AuditSEO AI Platform</p>
-          <p className="mt-1 text-xs font-semibold tracking-wide text-[#64746F]">SEO Audit Platform</p>
-        </header>
-
-        <div className="mt-7 flex rounded-2xl bg-[#F1F4F6] p-1.5" role="tablist" aria-label="Authentication">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'login'}
-            onClick={() => setCurrentView('login')}
-            className={tabClass('login')}
-          >
-            Sign In
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'register'}
-            onClick={() => setCurrentView('register')}
-            className={tabClass('register')}
-          >
-            Sign Up
-          </button>
-        </div>
+    <AuthLayout>
+      <section className="auth-glass-card relative overflow-hidden rounded-[28px] px-7 py-9 sm:px-10 sm:py-10">
+        <AuthCardBrand />
 
         {children}
 
-        <footer className="mt-7 flex items-center justify-center gap-1.5 border-t border-[#E4EAE8] pt-5 text-center text-[11px] font-semibold text-[#71807C]">
-          <ShieldCheck className="h-3.5 w-3.5 text-[#0C4137]" />
-          Secure access to AuditSEO AI Platform
-        </footer>
+        <div className="my-6 flex items-center gap-3" aria-hidden="true">
+          <span className="h-px flex-1 bg-white/10" />
+          <span className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-white/42">Or</span>
+          <span className="h-px flex-1 bg-white/10" />
+        </div>
+
+        <button
+          type="button"
+          disabled
+          aria-disabled="true"
+          className="auth-google-button flex min-h-12 w-full cursor-not-allowed items-center justify-center gap-2.5 rounded-2xl px-4 text-xs font-bold text-white/60"
+        >
+          <GoogleMark />
+          {isLogin ? 'Sign In with Google' : 'Sign Up with Google'}
+        </button>
+
+        <p className="mt-6 text-center text-xs font-medium text-white/55">
+          {isLogin ? "Don't have an account?" : 'Already have an account?'}{' '}
+          <button
+            type="button"
+            onClick={() => setCurrentView(isLogin ? 'register' : 'login')}
+            className="font-extrabold text-orange-300 underline decoration-orange-300/30 underline-offset-4 transition-colors hover:text-orange-200"
+          >
+            {isLogin ? 'Sign Up' : 'Sign In'}
+          </button>
+        </p>
       </section>
-    </main>
+    </AuthLayout>
   );
 }

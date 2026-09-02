@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { AlertCircle, CheckCircle2, Loader2, Mail, MailCheck, RefreshCw } from 'lucide-react';
-import { AuthLayout } from '../../components/layout/AuthLayout';
+import { AlertCircle, ArrowLeft, CheckCircle2, Loader2, Mail, MailCheck, RefreshCw } from 'lucide-react';
+import { AuthCardBrand, AuthLayout } from '../../components/layout/AuthLayout';
 import { useApp } from '../../context/AppContext';
 import { getPublicApiErrorMessage } from '../../utils/publicApiErrors';
 
@@ -37,28 +37,59 @@ export const EmailVerificationPage: React.FC = () => {
   };
 
   return (
-    <AuthLayout modeLabel="Email verification notice">
-      <section className="rounded-[2rem] border border-[var(--color-border)] bg-[var(--color-surface)] p-6 shadow-2xl sm:p-8">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--color-cta)] text-[var(--color-on-cta)] shadow-lg"><MailCheck className="h-7 w-7" /></div>
-        <h2 className="mt-5 text-3xl font-black tracking-[-0.03em] text-[var(--color-text)]">Check your inbox</h2>
-        <p className="mt-3 text-sm leading-6 text-[var(--color-muted)]">Registration creates an active but unverified regular user. Verify your email through the secure link before logging in.</p>
+    <AuthLayout>
+      <section className="auth-glass-card relative overflow-hidden rounded-[28px] px-7 py-9 sm:px-10 sm:py-10">
+        <AuthCardBrand />
 
-        <div className="mt-5 rounded-2xl border border-[var(--color-border)] bg-[var(--color-secondary)] p-4">
-          <label htmlFor="verification-email-input" className="text-[10px] font-black uppercase tracking-[0.14em] text-[var(--color-muted)]">Verification destination</label>
-          <div className="relative mt-2"><Mail className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-muted)]" /><input id="verification-email-input" type="email" value={email} onChange={(event) => { setEmail(event.target.value); setErrorMessage(''); }} placeholder="name@company.com" disabled={isResending} className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] py-3 pl-10 pr-4 text-sm font-semibold text-[var(--color-text)] outline-none focus:border-[var(--color-primary)] disabled:opacity-60" /></div>
+        <div className="mx-auto mt-7 flex h-16 w-16 items-center justify-center rounded-full border border-orange-200/25 bg-orange-300/10 text-orange-200 shadow-[0_0_32px_rgba(251,146,60,0.18)]">
+          <MailCheck className="h-7 w-7" />
         </div>
 
-        {resendMessage ? <div className="mt-4 flex items-start gap-2.5 rounded-2xl border border-[var(--color-success-border)] bg-[var(--color-success-bg)] p-3.5 text-xs font-semibold leading-5 text-[var(--color-success-text)]" role="status"><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />{resendMessage}</div> : null}
-        {errorMessage ? <div className="mt-4 flex items-start gap-2.5 rounded-2xl border border-[var(--color-danger-border)] bg-[var(--color-danger-bg)] p-3.5 text-xs font-semibold leading-5 text-[var(--color-danger-text)]" role="alert"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{errorMessage}</div> : null}
+        <div className="mt-6 text-center">
+          <h1 className="text-3xl font-extrabold tracking-[-0.045em] text-white sm:text-[2.2rem]">
+            Check your <span className="auth-accent-text">inbox</span>
+          </h1>
+          <p className="mx-auto mt-3 max-w-sm text-xs font-medium leading-5 text-white/52 sm:text-sm sm:leading-6">
+            Registration creates an active but unverified regular user. Verify your email through the secure link before logging in.
+          </p>
+        </div>
+
+        <div className="mt-6">
+          <label htmlFor="verification-email-input" className="mb-2 block text-xs font-bold text-white/78">Email</label>
+          <div className="relative">
+            <Mail className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-orange-200/55" />
+            <input
+              id="verification-email-input"
+              type="email"
+              value={email}
+              onChange={(event) => { setEmail(event.target.value); setErrorMessage(''); }}
+              placeholder="Enter your email"
+              disabled={isResending}
+              className="auth-input min-h-[52px] w-full rounded-2xl py-3 pl-11 pr-4 text-sm font-semibold"
+            />
+          </div>
+        </div>
+
+        {resendMessage ? (
+          <div className="mt-4 flex items-start gap-2.5 rounded-2xl border border-emerald-300/20 bg-emerald-950/35 p-3.5 text-xs font-semibold leading-5 text-emerald-100" role="status">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />{resendMessage}
+          </div>
+        ) : null}
+        {errorMessage ? (
+          <div className="mt-4 flex items-start gap-2.5 rounded-2xl border border-rose-300/25 bg-rose-950/35 p-3.5 text-xs font-semibold leading-5 text-rose-100" role="alert">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-300" />{errorMessage}
+          </div>
+        ) : null}
 
         <div className="mt-6 space-y-3">
-          <button type="button" onClick={() => void handleResend()} disabled={isResending} className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[var(--color-cta)] px-5 text-sm font-black text-[var(--color-on-cta)] shadow-lg transition-all hover:-translate-y-0.5 hover:bg-[var(--color-cta-hover)] disabled:cursor-not-allowed disabled:opacity-60">
-            {isResending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          <button type="button" onClick={() => void handleResend()} disabled={isResending} className="auth-primary-button group inline-flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl px-5 text-sm font-extrabold text-[#21130b]">
+            {isResending ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" /> : <RefreshCw className="h-4 w-4 transition-transform group-hover:rotate-12 motion-reduce:transform-none" />}
             {isResending ? 'Requesting verification email...' : 'Resend verification email'}
           </button>
-          <button type="button" onClick={() => setCurrentView('login')} className="inline-flex min-h-11 w-full items-center justify-center rounded-xl border border-[var(--color-border)] bg-[var(--color-secondary)] px-5 text-xs font-black text-[var(--color-text)] transition-colors hover:border-[var(--color-primary)]">Return to Login</button>
+          <button type="button" onClick={() => setCurrentView('login')} className="auth-secondary-button inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl px-5 text-xs font-extrabold text-white/65 transition-colors hover:text-white">
+            <ArrowLeft className="h-4 w-4" /> Return to Login
+          </button>
         </div>
-
       </section>
     </AuthLayout>
   );
