@@ -3,10 +3,15 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\IndexAuditRequest;
 use App\Http\Requests\StoreAuditRequest;
 use App\Jobs\RunSeoAuditJob;
+use App\Models\ActionLog;
 use App\Models\Audit;
 use App\Models\Domain;
+use App\Services\ActionLogger;
+use App\Support\AuditUrl;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -33,9 +38,9 @@ class AuditController extends Controller
         'failed_at',
     ];
 
-    public function store(StoreAuditRequest $request): JsonResponse
+    public function store(StoreAuditRequest $request, ActionLogger $actionLogger): JsonResponse
     {
-        $url = $request->validated('url');
+        $url = AuditUrl::canonicalizeForStorage($request->validated('url'));
         $domainName = strtolower((string) parse_url($url, PHP_URL_HOST));
 
         $domain = Domain::firstOrCreate(
@@ -71,11 +76,25 @@ class AuditController extends Controller
                 'audit_id' => $audit->id,
                 'exception' => $exception::class,
             ]);
+            $actionLogger->log(
+                $request->user(),
+                ActionLog::ACTION_AUDIT_CREATED,
+                $audit,
+                ActionLog::STATUS_FAILURE,
+                ['new_status' => Audit::STATUS_FAILED],
+            );
 
             return response()->json([
                 'message' => 'Audit service is temporarily unavailable.',
             ], 503);
         }
+
+        $actionLogger->log(
+            $request->user(),
+            ActionLog::ACTION_AUDIT_CREATED,
+            $audit,
+            metadata: ['new_status' => Audit::STATUS_PENDING],
+        );
 
         return response()->json([
             'message' => 'Audit queued for processing.',
@@ -90,13 +109,23 @@ class AuditController extends Controller
 
     // index() & show() ces 2 fcts gardent la protection IDOR:
     // retourner seulement les audits de l’utilisateur connecte
-    public function index(Request $request): JsonResponse
+    public function index(IndexAuditRequest $request): JsonResponse
     {
+        $filters = $request->validated();
         $audits = Audit::query()
             ->select(self::SUMMARY_FIELDS)
             ->whereHas('domain', fn ($query) => $query->where('user_id', $request->user()->id))
-            ->latest()
-            ->paginate(20);
+            ->when(
+                isset($filters['status']),
+                fn (Builder $query) => $query->where('status', $filters['status']),
+            )
+            ->when(
+                isset($filters['search']),
+                fn (Builder $query) => $this->applySearch($query, $filters['search']),
+            )
+            ->latest('id')
+            ->paginate(20)
+            ->withQueryString();
 
         return response()->json([
             'audits' => collect($audits->items())
@@ -116,6 +145,22 @@ class AuditController extends Controller
                 'next_page_url' => $audits->nextPageUrl(),
             ],
         ]);
+    }
+
+    private function applySearch(Builder $query, string $search): Builder
+    {
+        $pattern = '%'.trim($search).'%';
+
+        return $query->where(function (Builder $searchQuery) use ($pattern): void {
+            $searchQuery
+                ->whereLike('requested_url', $pattern)
+                ->orWhereLike('final_url', $pattern)
+                ->orWhereHas('domain', function (Builder $domainQuery) use ($pattern): void {
+                    $domainQuery
+                        ->whereLike('domain_name', $pattern)
+                        ->orWhereLike('url', $pattern);
+                });
+        });
     }
 
     // meme logique ; donc si user A essaie de voir laudit de l'utilisateur B ? laravel return 404 error C la protection IDOR

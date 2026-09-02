@@ -46,18 +46,23 @@ class HealthCheckTest extends TestCase
         $this->assertResponseContainsNoInfrastructureDetails($response->getContent());
     }
 
-    public function test_readiness_endpoint_requires_a_verified_authenticated_user(): void
+    public function test_detailed_readiness_requires_a_verified_admin(): void
     {
         $this->getJson('/api/health/readiness')->assertUnauthorized();
 
-        Sanctum::actingAs(User::factory()->unverified()->create());
+        Sanctum::actingAs(User::factory()->create());
+        $this->getJson('/api/health/readiness')->assertForbidden();
 
+        Sanctum::actingAs(User::factory()->unverified()->create());
+        $this->getJson('/api/health/readiness')->assertForbidden();
+
+        Sanctum::actingAs($this->createAdmin(unverified: true));
         $this->getJson('/api/health/readiness')->assertForbidden();
     }
 
     public function test_readiness_checks_database_and_reports_a_healthy_audit_queue(): void
     {
-        Sanctum::actingAs(User::factory()->create());
+        Sanctum::actingAs($this->createAdmin());
 
         $this->getJson('/api/health/readiness')
             ->assertOk()
@@ -78,7 +83,7 @@ class HealthCheckTest extends TestCase
 
     public function test_readiness_database_failure_is_safe_and_skips_audit_counts(): void
     {
-        Sanctum::actingAs(User::factory()->create());
+        Sanctum::actingAs($this->createAdmin());
         DB::shouldReceive('select')
             ->once()
             ->with('select 1')
@@ -111,7 +116,7 @@ class HealthCheckTest extends TestCase
             'queue.default' => 'redis',
             'cache.default' => 'array',
         ]);
-        Sanctum::actingAs(User::factory()->create());
+        Sanctum::actingAs($this->createAdmin());
 
         $connection = Mockery::mock();
         $connection->shouldReceive('command')->once()->with('ping')->andReturn('PONG');
@@ -129,7 +134,7 @@ class HealthCheckTest extends TestCase
             'queue.default' => 'sync',
             'cache.default' => 'redis',
         ]);
-        Sanctum::actingAs(User::factory()->create());
+        Sanctum::actingAs($this->createAdmin());
 
         Redis::shouldReceive('connection')
             ->once()
@@ -154,7 +159,7 @@ class HealthCheckTest extends TestCase
     public function test_readiness_detects_stale_pending_and_running_audits(): void
     {
         $this->travelTo(now()->startOfSecond());
-        Sanctum::actingAs($user = User::factory()->create());
+        Sanctum::actingAs($user = $this->createAdmin());
         $domain = $this->createDomain($user);
 
         $stalePending = $this->createAudit($domain, [
@@ -185,7 +190,7 @@ class HealthCheckTest extends TestCase
     public function test_pending_and_running_audits_younger_than_their_thresholds_are_not_stale(): void
     {
         $this->travelTo(now()->startOfSecond());
-        Sanctum::actingAs($user = User::factory()->create());
+        Sanctum::actingAs($user = $this->createAdmin());
         $domain = $this->createDomain($user);
 
         $this->assertSame(15, config('health.audit_queue.stale_running_minutes'));
@@ -212,7 +217,7 @@ class HealthCheckTest extends TestCase
     public function test_stale_running_threshold_is_configurable(): void
     {
         $this->travelTo(now()->startOfSecond());
-        Sanctum::actingAs($user = User::factory()->create());
+        Sanctum::actingAs($user = $this->createAdmin());
         $domain = $this->createDomain($user);
 
         $this->createAudit($domain, [
@@ -243,6 +248,15 @@ class HealthCheckTest extends TestCase
             'domain_name' => 'health-check.example',
             'url' => 'https://health-check.example',
         ]);
+    }
+
+    private function createAdmin(bool $unverified = false): User
+    {
+        $factory = User::factory();
+        $admin = ($unverified ? $factory->unverified() : $factory)->create();
+        $admin->forceFill(['role' => User::ROLE_ADMIN])->save();
+
+        return $admin;
     }
 
     /**

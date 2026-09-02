@@ -2,11 +2,15 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\MassPrunable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class AdminActionLog extends Model
 {
+    use MassPrunable;
+
     public const UPDATED_AT = null;
 
     public const ACTION_USER_CREATED = 'user.created';
@@ -41,5 +45,12 @@ class AdminActionLog extends Model
     public function adminUser(): BelongsTo
     {
         return $this->belongsTo(User::class, 'admin_user_id');
+    }
+
+    public function prunable(): Builder
+    {
+        $days = max(1, (int) config('retention.admin_action_logs_days', 365));
+
+        return static::query()->where('created_at', '<', now()->subDays($days));
     }
 }

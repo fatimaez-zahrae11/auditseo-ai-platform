@@ -3,7 +3,9 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ActionLog;
 use App\Models\User;
+use App\Services\ActionLogger;
 use App\Support\EmailAddress;
 use Illuminate\Auth\Events\Verified;
 use Illuminate\Http\JsonResponse;
@@ -12,6 +14,8 @@ use Illuminate\Http\Request;
 class EmailVerificationController extends Controller
 {
     private const RESEND_MESSAGE = 'If the email is registered and unverified, a verification link has been sent.';
+
+    public function __construct(private readonly ActionLogger $actionLogger) {}
 
     public function verify(Request $request, int $id, string $hash): JsonResponse
     {
@@ -29,8 +33,15 @@ class EmailVerificationController extends Controller
             ], 403);
         }
 
-        if (! $user->hasVerifiedEmail() && $user->markEmailAsVerified()) {
+        $wasUnverified = ! $user->hasVerifiedEmail();
+
+        if ($wasUnverified && $user->markEmailAsVerified()) {
             event(new Verified($user));
+            $this->actionLogger->log(
+                $user,
+                ActionLog::ACTION_EMAIL_VERIFIED,
+                $user,
+            );
         }
 
         return response()->json([
@@ -55,6 +66,11 @@ class EmailVerificationController extends Controller
 
         if ($user && ! $user->hasVerifiedEmail()) {
             $user->sendEmailVerificationNotification();
+            $this->actionLogger->log(
+                $user,
+                ActionLog::ACTION_EMAIL_VERIFICATION_REQUESTED,
+                $user,
+            );
         }
 
         return response()->json([

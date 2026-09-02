@@ -9,3 +9,7 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('sanctum:prune-expired --hours=24')->daily();
+Schedule::command('model:prune')->daily()->withoutOverlapping();
+Schedule::command(
+    'queue:prune-failed --hours='.(int) config('retention.failed_jobs_hours', 720),
+)->daily()->withoutOverlapping();

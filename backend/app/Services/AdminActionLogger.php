@@ -11,6 +11,8 @@ use Throwable;
 
 class AdminActionLogger
 {
+    public function __construct(private readonly ActionLogger $actionLogger) {}
+
     /**
      * @param  array<string, mixed>  $metadata
      */
@@ -21,8 +23,10 @@ class AdminActionLogger
         array $metadata = [],
         ?Request $request = null,
     ): void {
+        $this->actionLogger->log($adminUser, $action, $target, metadata: $metadata);
+
         try {
-            $safeMetadata = $this->sanitizeMetadata($metadata);
+            $safeMetadata = $this->actionLogger->sanitizeMetadata($metadata);
 
             AdminActionLog::query()->create([
                 'admin_user_id' => $adminUser->getKey(),
@@ -48,47 +52,6 @@ class AdminActionLogger
      */
     public function sanitizeMetadata(array $metadata): array
     {
-        $safe = [];
-
-        foreach ($metadata as $key => $value) {
-            if (is_string($key) && $this->isSensitiveKey($key)) {
-                continue;
-            }
-
-            if (is_array($value)) {
-                $safe[$key] = $this->sanitizeMetadata($value);
-
-                continue;
-            }
-
-            if (is_null($value) || is_bool($value) || is_int($value) || is_float($value)) {
-                $safe[$key] = $value;
-
-                continue;
-            }
-
-            if (is_string($value)) {
-                $safe[$key] = Str::limit($value, 1_000, '');
-            }
-        }
-
-        return $safe;
-    }
-
-    private function isSensitiveKey(string $key): bool
-    {
-        $normalized = strtolower(str_replace(['-', ' '], '_', trim($key)));
-
-        if (str_contains($normalized, '.env') || str_contains($normalized, 'authorization')) {
-            return true;
-        }
-
-        foreach (['password', 'token', 'api_key', 'apikey', 'secret', 'cookie', 'session'] as $term) {
-            if (str_contains($normalized, $term)) {
-                return true;
-            }
-        }
-
-        return false;
+        return $this->actionLogger->sanitizeMetadata($metadata);
     }
 }

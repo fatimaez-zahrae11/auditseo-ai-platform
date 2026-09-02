@@ -103,6 +103,108 @@ class AdminUserApiTest extends TestCase
             ->assertJsonPath('pagination.per_page', 100);
     }
 
+    public function test_admin_can_filter_users_by_name_or_email_search(): void
+    {
+        Sanctum::actingAs($this->createAdmin());
+        $nameMatch = User::factory()->create([
+            'name' => 'Needle Person',
+            'email' => 'first@example.com',
+        ]);
+        $emailMatch = User::factory()->create([
+            'name' => 'Different Person',
+            'email' => 'needle@example.com',
+        ]);
+        User::factory()->create([
+            'name' => 'Unrelated Person',
+            'email' => 'unrelated@example.com',
+        ]);
+
+        $response = $this->getJson('/api/admin/users?search=needle')
+            ->assertOk()
+            ->assertJsonPath('pagination.total', 2);
+
+        $this->assertEqualsCanonicalizing(
+            [$nameMatch->id, $emailMatch->id],
+            collect($response->json('users'))->pluck('id')->all(),
+        );
+    }
+
+    public function test_admin_can_filter_users_by_each_role(): void
+    {
+        $admin = $this->createAdmin();
+        $otherAdmin = $this->createAdmin();
+        $regularUser = User::factory()->create();
+        Sanctum::actingAs($admin);
+
+        $userResponse = $this->getJson('/api/admin/users?role=user')
+            ->assertOk()
+            ->assertJsonPath('pagination.total', 1)
+            ->assertJsonPath('users.0.id', $regularUser->id)
+            ->assertJsonPath('users.0.role', User::ROLE_USER);
+        $adminResponse = $this->getJson('/api/admin/users?role=admin')
+            ->assertOk()
+            ->assertJsonPath('pagination.total', 2);
+
+        $this->assertEqualsCanonicalizing(
+            [$admin->id, $otherAdmin->id],
+            collect($adminResponse->json('users'))->pluck('id')->all(),
+        );
+        $this->assertCount(1, $userResponse->json('users'));
+    }
+
+    public function test_admin_can_filter_users_by_each_active_status(): void
+    {
+        $admin = $this->createAdmin();
+        $activeUser = User::factory()->create(['is_active' => true]);
+        $inactiveUser = User::factory()->create(['is_active' => false]);
+        Sanctum::actingAs($admin);
+
+        $activeResponse = $this->getJson('/api/admin/users?status=active')
+            ->assertOk()
+            ->assertJsonPath('pagination.total', 2);
+        $inactiveResponse = $this->getJson('/api/admin/users?status=inactive')
+            ->assertOk()
+            ->assertJsonPath('pagination.total', 1)
+            ->assertJsonPath('users.0.id', $inactiveUser->id);
+
+        $this->assertEqualsCanonicalizing(
+            [$admin->id, $activeUser->id],
+            collect($activeResponse->json('users'))->pluck('id')->all(),
+        );
+    }
+
+    public function test_admin_user_filters_apply_before_pagination_and_preserve_filtered_totals(): void
+    {
+        Sanctum::actingAs($this->createAdmin());
+        User::factory()->count(5)->create(['is_active' => false]);
+        User::factory()->count(3)->create(['is_active' => true]);
+
+        $response = $this->getJson('/api/admin/users?status=inactive&per_page=2&page=2')
+            ->assertOk()
+            ->assertJsonCount(2, 'users')
+            ->assertJsonPath('pagination.current_page', 2)
+            ->assertJsonPath('pagination.last_page', 3)
+            ->assertJsonPath('pagination.per_page', 2)
+            ->assertJsonPath('pagination.total', 5);
+
+        $this->assertStringContainsString('status=inactive', $response->json('pagination.next_page_url'));
+        $this->assertTrue(collect($response->json('users'))->every(
+            fn (array $user): bool => $user['is_active'] === false,
+        ));
+    }
+
+    public function test_admin_user_filters_reject_invalid_role_and_status(): void
+    {
+        Sanctum::actingAs($this->createAdmin());
+
+        $this->getJson('/api/admin/users?role=owner')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('role');
+        $this->getJson('/api/admin/users?status=suspended')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('status');
+    }
+
     public function test_admin_user_list_returns_accurate_audit_and_recommendation_counts(): void
     {
         $admin = $this->createAdmin();

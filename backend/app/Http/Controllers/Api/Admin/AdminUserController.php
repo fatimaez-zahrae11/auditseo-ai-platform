@@ -4,12 +4,14 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\DeactivateAdminUserRequest;
+use App\Http\Requests\Admin\IndexAdminUserRequest;
 use App\Http\Requests\Admin\StoreAdminUserRequest;
 use App\Models\AccessLog;
 use App\Models\AdminActionLog;
 use App\Models\Audit;
 use App\Models\User;
 use App\Services\AdminActionLogger;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -22,11 +24,12 @@ class AdminUserController extends Controller
 
     private const MAX_PER_PAGE = 100;
 
-    public function index(Request $request): JsonResponse
+    public function index(IndexAdminUserRequest $request): JsonResponse
     {
-        $perPage = max(
-            1,
-            min($request->integer('per_page', self::DEFAULT_PER_PAGE), self::MAX_PER_PAGE),
+        $filters = $request->validated();
+        $perPage = min(
+            (int) ($filters['per_page'] ?? self::DEFAULT_PER_PAGE),
+            self::MAX_PER_PAGE,
         );
 
         // This global user query is permitted only behind the admin route middleware group.
@@ -54,8 +57,24 @@ class AdminUserController extends Controller
                     ->selectRaw('COUNT(*)')
                     ->whereColumn('domains.user_id', 'users.id');
             }, 'recommendations_count')
+            ->when(
+                isset($filters['search']),
+                fn (Builder $query) => $this->applySearch($query, $filters['search']),
+            )
+            ->when(
+                isset($filters['role']),
+                fn (Builder $query) => $query->where('users.role', $filters['role']),
+            )
+            ->when(
+                isset($filters['status']),
+                fn (Builder $query) => $query->where(
+                    'users.is_active',
+                    $filters['status'] === 'active',
+                ),
+            )
             ->latest('users.id')
-            ->paginate($perPage);
+            ->paginate($perPage)
+            ->withQueryString();
 
         return response()->json([
             'users' => collect($users->items())
@@ -64,6 +83,17 @@ class AdminUserController extends Controller
                 ->all(),
             'pagination' => $this->pagination($users),
         ]);
+    }
+
+    private function applySearch(Builder $query, string $search): Builder
+    {
+        $pattern = '%'.trim($search).'%';
+
+        return $query->where(function (Builder $searchQuery) use ($pattern): void {
+            $searchQuery
+                ->whereLike('users.name', $pattern)
+                ->orWhereLike('users.email', $pattern);
+        });
     }
 
     public function store(

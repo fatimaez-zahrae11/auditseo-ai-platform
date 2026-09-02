@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Exceptions\AuditProcessingException;
 use App\Jobs\RunSeoAuditJob;
+use App\Models\ActionLog;
 use App\Models\Audit;
 use App\Models\Domain;
 use App\Models\User;
@@ -268,6 +269,14 @@ class AuditApiTest extends TestCase
             'requested_url' => 'https://example.com/page',
             'raw_data' => null,
         ]);
+        $this->assertDatabaseHas('action_logs', [
+            'actor_user_id' => $user->id,
+            'actor_role' => User::ROLE_USER,
+            'action' => ActionLog::ACTION_AUDIT_CREATED,
+            'entity_type' => 'audit',
+            'entity_id' => $response->json('audit.id'),
+            'status' => ActionLog::STATUS_SUCCESS,
+        ]);
         $audit = Audit::findOrFail($response->json('audit.id'));
         $this->assertNull($audit->final_url);
         $this->assertNull($audit->started_at);
@@ -285,6 +294,32 @@ class AuditApiTest extends TestCase
             ->assertJsonPath('audit.raw_data', null);
 
         $this->forgetMock(SeoCrawlerService::class);
+    }
+
+    public function test_audit_url_query_and_fragment_are_removed_before_persistence(): void
+    {
+        $user = User::factory()->create();
+        Sanctum::actingAs($user);
+
+        $response = parent::postJson('/api/audits', [
+            'url' => 'https://Example.COM/page?token=secret-value&campaign=test#section',
+        ]);
+
+        $response
+            ->assertAccepted()
+            ->assertJsonPath('audit.requested_url', 'https://example.com/page');
+
+        $this->assertDatabaseHas('domains', [
+            'user_id' => $user->id,
+            'domain_name' => 'example.com',
+            'url' => 'https://example.com/page',
+        ]);
+        $this->assertDatabaseHas('audits', [
+            'id' => $response->json('audit.id'),
+            'requested_url' => 'https://example.com/page',
+        ]);
+        $this->assertStringNotContainsString('secret-value', $response->getContent());
+        Queue::assertPushed(RunSeoAuditJob::class);
     }
 
     public function test_polling_returns_the_completed_audit_after_the_dispatched_job_is_processed(): void
@@ -351,6 +386,13 @@ class AuditApiTest extends TestCase
         $this->assertNotNull($audit->failed_at);
         $this->assertSame('Audit dispatch failed.', $audit->failure_reason);
         $this->assertArrayNotHasKey('failure_reason', $audit->toArray());
+        $this->assertDatabaseHas('action_logs', [
+            'actor_user_id' => $user->id,
+            'action' => ActionLog::ACTION_AUDIT_CREATED,
+            'entity_type' => 'audit',
+            'entity_id' => $audit->id,
+            'status' => ActionLog::STATUS_FAILURE,
+        ]);
         Http::assertNothingSent();
 
         Log::shouldHaveReceived('warning')->once()->with('SEO audit dispatch failed.', [
@@ -2398,6 +2440,105 @@ class AuditApiTest extends TestCase
             'completed_at',
             'failed_at',
         ], array_keys($response->json('audits.0')));
+    }
+
+    public function test_user_can_filter_own_audits_by_domain_requested_or_final_url(): void
+    {
+        $user = User::factory()->create();
+        $otherUser = User::factory()->create();
+        $domainMatch = $this->createAuditFor($user, 'domain-needle.example.com', [
+            'requested_url' => 'https://domain-needle.example.com/page',
+        ]);
+        $requestedMatch = $this->createAuditFor($user, 'requested.example.com', [
+            'requested_url' => 'https://requested.example.com/request-needle',
+        ]);
+        $finalMatch = $this->createAuditFor($user, 'final.example.com', [
+            'requested_url' => 'https://final.example.com/start',
+            'final_url' => 'https://final.example.com/final-needle',
+        ]);
+        $this->createAuditFor($otherUser, 'domain-needle-other.example.com', [
+            'requested_url' => 'https://domain-needle-other.example.com/page',
+        ]);
+        Sanctum::actingAs($user);
+
+        $this->getJson('/api/audits?search=domain-needle')
+            ->assertOk()
+            ->assertJsonPath('pagination.total', 1)
+            ->assertJsonPath('audits.0.id', $domainMatch->id);
+        $this->getJson('/api/audits?search=request-needle')
+            ->assertOk()
+            ->assertJsonPath('pagination.total', 1)
+            ->assertJsonPath('audits.0.id', $requestedMatch->id);
+        $this->getJson('/api/audits?search=final-needle')
+            ->assertOk()
+            ->assertJsonPath('pagination.total', 1)
+            ->assertJsonPath('audits.0.id', $finalMatch->id);
+    }
+
+    public function test_user_can_filter_own_audits_by_status(): void
+    {
+        $user = User::factory()->create();
+        $completed = $this->createAuditFor($user, 'completed-filter.example.com', [
+            'requested_url' => 'https://completed-filter.example.com',
+            'status' => Audit::STATUS_COMPLETED,
+        ]);
+        $this->createAuditFor($user, 'pending-filter.example.com', [
+            'requested_url' => 'https://pending-filter.example.com',
+            'status' => Audit::STATUS_PENDING,
+        ]);
+        Sanctum::actingAs($user);
+
+        $this->getJson('/api/audits?status=completed')
+            ->assertOk()
+            ->assertJsonCount(1, 'audits')
+            ->assertJsonPath('audits.0.id', $completed->id)
+            ->assertJsonPath('audits.0.status', Audit::STATUS_COMPLETED)
+            ->assertJsonPath('pagination.total', 1);
+    }
+
+    public function test_user_audit_filters_apply_before_pagination_and_remain_owner_scoped(): void
+    {
+        $user = User::factory()->create();
+        $otherUser = User::factory()->create();
+        foreach (range(1, 25) as $auditNumber) {
+            $this->createAuditFor($user, "completed-own-{$auditNumber}.example.com", [
+                'requested_url' => "https://completed-own-{$auditNumber}.example.com",
+                'status' => Audit::STATUS_COMPLETED,
+            ]);
+        }
+        foreach (range(1, 3) as $auditNumber) {
+            $this->createAuditFor($otherUser, "completed-other-{$auditNumber}.example.com", [
+                'requested_url' => "https://completed-other-{$auditNumber}.example.com",
+                'status' => Audit::STATUS_COMPLETED,
+            ]);
+        }
+        $this->createAuditFor($user, 'pending-own.example.com', [
+            'requested_url' => 'https://pending-own.example.com',
+            'status' => Audit::STATUS_PENDING,
+        ]);
+        Sanctum::actingAs($user);
+
+        $response = $this->getJson('/api/audits?status=completed&page=2')
+            ->assertOk()
+            ->assertJsonCount(5, 'audits')
+            ->assertJsonPath('pagination.current_page', 2)
+            ->assertJsonPath('pagination.last_page', 2)
+            ->assertJsonPath('pagination.per_page', 20)
+            ->assertJsonPath('pagination.total', 25);
+
+        $this->assertStringContainsString('status=completed', $response->json('pagination.previous_page_url'));
+        $this->assertTrue(collect($response->json('audits'))->every(
+            fn (array $audit): bool => $audit['status'] === Audit::STATUS_COMPLETED,
+        ));
+    }
+
+    public function test_user_audit_index_rejects_an_invalid_status(): void
+    {
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->getJson('/api/audits?status=cancelled')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('status');
     }
 
     public function test_audit_index_returns_every_async_status_as_a_summary(): void

@@ -46,7 +46,7 @@ class LogAccess
 
     private function shouldSkip(Request $request): bool
     {
-        if ($request->is('api/health')) {
+        if ($request->is('api/health') || $request->is('api/analytics/page-view')) {
             return true;
         }
 

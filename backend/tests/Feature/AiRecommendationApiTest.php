@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\ActionLog;
 use App\Models\ApiUsageLog;
 use App\Models\Audit;
 use App\Models\Domain;
@@ -17,6 +18,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
 use RuntimeException;
@@ -260,6 +262,14 @@ class AiRecommendationApiTest extends TestCase
             'status_code' => 200,
             'error_message' => null,
         ]);
+        $this->assertDatabaseHas('action_logs', [
+            'actor_user_id' => $user->id,
+            'actor_role' => User::ROLE_USER,
+            'action' => ActionLog::ACTION_RECOMMENDATION_REQUESTED,
+            'entity_type' => 'audit',
+            'entity_id' => $audit->id,
+            'status' => ActionLog::STATUS_SUCCESS,
+        ]);
         $this->assertNotEmpty($response->json('recommendation.prompt_summary'));
     }
 
@@ -306,6 +316,13 @@ class AiRecommendationApiTest extends TestCase
         Http::assertNothingSent();
         $this->assertDatabaseCount('ai_recommendations', 0);
         $this->assertDatabaseCount('api_usage_logs', 0);
+        $this->assertDatabaseHas('action_logs', [
+            'actor_user_id' => $user->id,
+            'action' => ActionLog::ACTION_RECOMMENDATION_REQUESTED,
+            'entity_type' => 'audit',
+            'entity_id' => $audit->id,
+            'status' => ActionLog::STATUS_FAILURE,
+        ]);
     }
 
     public function test_running_audit_cannot_generate_a_recommendation_or_call_the_provider(): void
@@ -420,6 +437,8 @@ class AiRecommendationApiTest extends TestCase
             $this->postJson("/api/audits/{$audit->id}/recommendations")
                 ->assertStatus(502)
                 ->assertExactJson(['message' => 'AI recommendation service is unavailable.']);
+
+            $this->travel(6)->minutes();
         }
 
         Http::assertNothingSent();
@@ -940,17 +959,38 @@ class AiRecommendationApiTest extends TestCase
         $audit = $this->createAuditFor($user);
         Sanctum::actingAs($user);
 
-        foreach (range(1, 5) as $attempt) {
-            $this->postJson("/api/audits/{$audit->id}/recommendations")
-                ->assertCreated();
-        }
+        $this->postJson("/api/audits/{$audit->id}/recommendations")
+            ->assertCreated();
 
         $this->postJson("/api/audits/{$audit->id}/recommendations")
             ->assertTooManyRequests();
 
-        Http::assertSentCount(5);
-        $this->assertDatabaseCount('ai_recommendations', 5);
-        $this->assertDatabaseCount('api_usage_logs', 5);
+        Http::assertSentCount(1);
+        $this->assertDatabaseCount('ai_recommendations', 1);
+        $this->assertDatabaseCount('api_usage_logs', 1);
+    }
+
+    public function test_recommendation_generation_rejects_a_second_concurrent_request_for_the_user(): void
+    {
+        $user = User::factory()->create();
+        $audit = $this->createAuditFor($user);
+        Sanctum::actingAs($user);
+        $lock = Cache::lock('ai_recommendation:user:'.$user->id.':lock', 180);
+        $this->assertTrue($lock->get());
+
+        try {
+            $this->postJson("/api/audits/{$audit->id}/recommendations")
+                ->assertTooManyRequests()
+                ->assertExactJson([
+                    'message' => 'AI recommendation generation is already in progress. Please try again shortly.',
+                ]);
+        } finally {
+            $lock->release();
+        }
+
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('ai_recommendations', 0);
+        $this->assertDatabaseCount('api_usage_logs', 0);
     }
 
     public function test_api_key_is_not_exposed_in_a_successful_json_response(): void

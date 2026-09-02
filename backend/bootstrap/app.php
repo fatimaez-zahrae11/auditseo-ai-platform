@@ -3,6 +3,7 @@
 use App\Http\Middleware\EnsureUserIsActive;
 use App\Http\Middleware\EnsureUserIsAdmin;
 use App\Http\Middleware\LogAccess;
+use App\Http\Middleware\ThrottlePreAuthentication;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -30,6 +31,11 @@ return Application::configure(basePath: dirname(__DIR__))
             'active' => EnsureUserIsActive::class,
             'admin' => EnsureUserIsAdmin::class,
         ]);
+
+        $middleware->prependToPriorityList(
+            \Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests::class,
+            ThrottlePreAuthentication::class,
+        );
 
         $middleware->trustProxies(
             at: '*',

@@ -11,3 +11,11 @@ backend/storage/framework/views/
 backend/bootstrap/cache/
 .DS_Store
 Thumbs.db
+
+.vscode/
+
+# Local OAuth / Google credential files
+*oauth*.json
+*client_secret*.json
+*google*credentials*.json
+*google*oauth*.json

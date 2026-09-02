@@ -4,8 +4,8 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\IndexAdminActionLogRequest;
-use App\Models\AdminActionLog;
-use App\Services\AdminActionLogger;
+use App\Models\ActionLog;
+use App\Services\ActionLogger;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -19,7 +19,7 @@ class AdminActionLogController extends Controller
 
     public function index(
         IndexAdminActionLogRequest $request,
-        AdminActionLogger $actionLogger,
+        ActionLogger $actionLogger,
     ): JsonResponse {
         $filters = $request->validated();
         $perPage = min(
@@ -27,50 +27,59 @@ class AdminActionLogController extends Controller
             self::MAX_PER_PAGE,
         );
 
-        // This global audit trail is safe only behind auth:sanctum, active, and admin.
-        $logs = AdminActionLog::query()
+        // This semantic product audit trail is visible only behind auth:sanctum, active, and admin.
+        $logs = ActionLog::query()
             ->select([
                 'id',
-                'admin_user_id',
+                'actor_user_id',
+                'actor_role',
+                'actor_name',
+                'actor_email',
                 'action',
-                'target_type',
-                'target_id',
+                'entity_type',
+                'entity_id',
+                'status',
                 'metadata',
-                'ip_address',
                 'created_at',
             ])
-            ->with('adminUser:id,email')
             ->when(
-                isset($filters['admin_user_id']),
-                fn (Builder $query) => $query
-                    ->where('admin_user_id', $filters['admin_user_id']),
+                isset($filters['role']) && $filters['role'] !== 'all',
+                fn (Builder $query) => $query->where('actor_role', $filters['role']),
+            )
+            ->when(
+                isset($filters['actor_user_id']),
+                fn (Builder $query) => $query->where('actor_user_id', $filters['actor_user_id']),
+            )
+            ->when(
+                isset($filters['q']),
+                fn (Builder $query) => $this->applySearch($query, $filters['q']),
             )
             ->when(
                 isset($filters['action']),
                 fn (Builder $query) => $query->where('action', $filters['action']),
             )
             ->when(
-                isset($filters['target_type']),
-                fn (Builder $query) => $query->where('target_type', $filters['target_type']),
+                isset($filters['entity_type']),
+                fn (Builder $query) => $query->where('entity_type', $filters['entity_type']),
             )
             ->when(
-                isset($filters['target_id']),
-                fn (Builder $query) => $query->where('target_id', $filters['target_id']),
+                isset($filters['status']),
+                fn (Builder $query) => $query->where('status', $filters['status']),
             )
             ->when(
-                isset($filters['created_from']),
+                isset($filters['date_from']),
                 fn (Builder $query) => $query->where(
                     'created_at',
                     '>=',
-                    $this->dateBoundary($filters['created_from'], true),
+                    CarbonImmutable::parse($filters['date_from'])->startOfDay(),
                 ),
             )
             ->when(
-                isset($filters['created_to']),
+                isset($filters['date_to']),
                 fn (Builder $query) => $query->where(
                     'created_at',
                     '<=',
-                    $this->dateBoundary($filters['created_to'], false),
+                    CarbonImmutable::parse($filters['date_to'])->endOfDay(),
                 ),
             )
             ->latest('created_at')
@@ -78,35 +87,39 @@ class AdminActionLogController extends Controller
             ->paginate($perPage);
 
         return response()->json([
-            'action_logs' => collect($logs->items())
-                ->map(fn (AdminActionLog $log): array => [
+            'data' => collect($logs->items())
+                ->map(fn (ActionLog $log): array => [
                     'id' => $log->id,
-                    'admin_user_id' => $log->admin_user_id,
-                    'admin_user_email' => $log->adminUser?->email,
+                    'actor' => [
+                        'id' => $log->actor_user_id,
+                        'name' => $log->actor_name ?? 'System',
+                        'email' => $log->actor_email,
+                        'role' => $log->actor_role ?? ActionLog::ROLE_SYSTEM,
+                    ],
                     'action' => $log->action,
-                    'target_type' => $log->target_type,
-                    'target_id' => $log->target_id,
-                    'metadata' => $log->metadata === null
-                        ? null
-                        : $actionLogger->sanitizeMetadata($log->metadata),
-                    'ip_address' => $log->ip_address,
+                    'entity_type' => $log->entity_type,
+                    'entity_id' => $log->entity_id,
+                    'status' => $log->status,
+                    'metadata_summary' => $actionLogger->metadataSummary($log->metadata),
                     'created_at' => $log->created_at,
                 ])
                 ->values()
                 ->all(),
-            'pagination' => $this->pagination($logs),
+            'meta' => $this->pagination($logs),
         ]);
     }
 
-    private function dateBoundary(string $value, bool $start): CarbonImmutable
+    private function applySearch(Builder $query, string $search): Builder
     {
-        $date = CarbonImmutable::parse($value);
+        $pattern = '%'.trim($search).'%';
 
-        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) !== 1) {
-            return $date;
-        }
-
-        return $start ? $date->startOfDay() : $date->endOfDay();
+        return $query->where(function (Builder $searchQuery) use ($pattern): void {
+            $searchQuery
+                ->whereLike('actor_name', $pattern)
+                ->orWhereLike('actor_email', $pattern)
+                ->orWhereLike('action', $pattern)
+                ->orWhereLike('entity_type', $pattern);
+        });
     }
 
     /**
@@ -121,8 +134,6 @@ class AdminActionLogController extends Controller
             'total' => $logs->total(),
             'from' => $logs->firstItem(),
             'to' => $logs->lastItem(),
-            'first_page_url' => $logs->url(1),
-            'last_page_url' => $logs->url($logs->lastPage()),
             'previous_page_url' => $logs->previousPageUrl(),
             'next_page_url' => $logs->nextPageUrl(),
         ];

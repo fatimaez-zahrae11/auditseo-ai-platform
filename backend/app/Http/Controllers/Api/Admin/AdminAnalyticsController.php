@@ -5,14 +5,19 @@ namespace App\Http\Controllers\Api\Admin;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\IndexAdminActiveUsersRequest;
 use App\Http\Requests\Admin\IndexAdminHeavyUsersRequest;
+use App\Http\Requests\Admin\IndexAdminTrafficRequest;
+use App\Http\Requests\Admin\IndexAdminWebTrafficRequest;
 use App\Models\AccessLog;
 use App\Models\AiRecommendation;
 use App\Models\Audit;
 use App\Models\User;
+use App\Services\WebAnalyticsService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 class AdminAnalyticsController extends Controller
 {
@@ -21,6 +26,12 @@ class AdminAnalyticsController extends Controller
     private const DEFAULT_PER_PAGE = 20;
 
     private const MAX_PER_PAGE = 100;
+
+    private const HEAVY_USER_AUDIT_WEIGHT = 10;
+
+    private const HEAVY_USER_RECOMMENDATION_WEIGHT = 8;
+
+    private const HEAVY_USER_ERROR_WEIGHT = 2;
 
     public function overview(): JsonResponse
     {
@@ -80,6 +91,81 @@ class AdminAnalyticsController extends Controller
                 'active_users_definition' => $this->activeUsersDefinition(),
             ],
         ]);
+    }
+
+    public function traffic(IndexAdminTrafficRequest $request): JsonResponse
+    {
+        $filters = $request->validated();
+        $period = $filters['period'] ?? '7d';
+        $granularity = $filters['granularity']
+            ?? ($period === '24h' ? 'hour' : 'day');
+        $to = CarbonImmutable::now();
+        $from = match ($period) {
+            '24h' => $to->subHours(23)->startOfHour(),
+            '30d' => $to->subDays(29)->startOfDay(),
+            default => $to->subDays(6)->startOfDay(),
+        };
+        $bucketExpression = $this->trafficBucketExpression($granularity);
+        $series = $this->emptyTrafficSeries($from, $to, $granularity);
+
+        $accessRows = AccessLog::query()
+            ->whereBetween('created_at', [$from, $to])
+            ->selectRaw(
+                $bucketExpression.' as period, COUNT(*) as requests, '.
+                'SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as http_errors',
+            )
+            ->groupBy(DB::raw($bucketExpression))
+            ->get();
+        $auditRows = Audit::query()
+            ->whereBetween('created_at', [$from, $to])
+            ->selectRaw($bucketExpression.' as period, COUNT(*) as audits')
+            ->groupBy(DB::raw($bucketExpression))
+            ->get();
+        $recommendationRows = AiRecommendation::query()
+            ->whereBetween('created_at', [$from, $to])
+            ->selectRaw($bucketExpression.' as period, COUNT(*) as recommendations')
+            ->groupBy(DB::raw($bucketExpression))
+            ->get();
+
+        $this->mergeTrafficRows($series, $accessRows, $granularity, ['requests', 'http_errors']);
+        $this->mergeTrafficRows($series, $auditRows, $granularity, ['audits']);
+        $this->mergeTrafficRows($series, $recommendationRows, $granularity, ['recommendations']);
+
+        $points = array_values($series);
+        $totals = array_reduce(
+            $points,
+            fn (array $totals, array $point): array => [
+                'requests' => $totals['requests'] + $point['requests'],
+                'audits' => $totals['audits'] + $point['audits'],
+                'recommendations' => $totals['recommendations'] + $point['recommendations'],
+                'http_errors' => $totals['http_errors'] + $point['http_errors'],
+            ],
+            ['requests' => 0, 'audits' => 0, 'recommendations' => 0, 'http_errors' => 0],
+        );
+
+        return response()->json([
+            'series' => $points,
+            'totals' => $totals,
+            'metadata' => [
+                'period' => $period,
+                'granularity' => $granularity,
+                'from' => $from,
+                'to' => $to,
+                'generated_at' => $to,
+            ],
+        ]);
+    }
+
+    public function webTraffic(
+        IndexAdminWebTrafficRequest $request,
+        WebAnalyticsService $analytics,
+    ): JsonResponse {
+        $filters = $request->validated();
+        $period = $filters['period'] ?? '30d';
+        $granularity = $filters['granularity']
+            ?? ($period === '24h' ? 'hour' : 'day');
+
+        return response()->json($analytics->aggregate($period, $granularity));
     }
 
     public function activeUsers(IndexAdminActiveUsersRequest $request): JsonResponse
@@ -157,42 +243,98 @@ class AdminAnalyticsController extends Controller
     public function heavyUsers(IndexAdminHeavyUsersRequest $request): JsonResponse
     {
         $filters = $request->validated();
-        [$from, $to] = $this->period($filters);
+        $period = $filters['period'] ?? '7d';
+        $to = CarbonImmutable::now();
+        $from = match ($period) {
+            '24h' => $to->subHours(24),
+            '30d' => $to->subDays(30),
+            default => $to->subDays(7),
+        };
         $perPage = $this->perPage($filters['per_page'] ?? null);
+
+        $accessUsage = DB::table('access_logs')
+            ->select('user_id')
+            ->selectRaw('COUNT(*) as requests_count')
+            ->selectRaw(
+                'SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as error_requests_count',
+            )
+            ->selectRaw('MAX(created_at) as last_seen_at')
+            ->whereNotNull('user_id')
+            ->whereBetween('created_at', [$from, $to])
+            ->groupBy('user_id');
+        $auditUsage = DB::table('audits')
+            ->join('domains', 'domains.id', '=', 'audits.domain_id')
+            ->select('domains.user_id')
+            ->selectRaw('COUNT(*) as audits_count')
+            ->selectRaw(
+                'SUM(CASE WHEN audits.status = ? THEN 1 ELSE 0 END) as completed_audits_count',
+                [Audit::STATUS_COMPLETED],
+            )
+            ->selectRaw(
+                'SUM(CASE WHEN audits.status = ? THEN 1 ELSE 0 END) as failed_audits_count',
+                [Audit::STATUS_FAILED],
+            )
+            ->whereBetween('audits.created_at', [$from, $to])
+            ->groupBy('domains.user_id');
+        $recommendationUsage = DB::table('ai_recommendations')
+            ->join('audits', 'audits.id', '=', 'ai_recommendations.audit_id')
+            ->join('domains', 'domains.id', '=', 'audits.domain_id')
+            ->select('domains.user_id')
+            ->selectRaw('COUNT(*) as recommendations_count')
+            ->whereBetween('ai_recommendations.created_at', [$from, $to])
+            ->groupBy('domains.user_id');
+
+        $requests = 'COALESCE(access_usage.requests_count, 0)';
+        $errors = 'COALESCE(access_usage.error_requests_count, 0)';
+        $audits = 'COALESCE(audit_usage.audits_count, 0)';
+        $recommendations = 'COALESCE(recommendation_usage.recommendations_count, 0)';
+        // Deterministic ranking from real period activity only.
+        $usageScore = sprintf(
+            '(%s + (%s * %d) + (%s * %d) + (%s * %d))',
+            $requests,
+            $audits,
+            self::HEAVY_USER_AUDIT_WEIGHT,
+            $recommendations,
+            self::HEAVY_USER_RECOMMENDATION_WEIGHT,
+            $errors,
+            self::HEAVY_USER_ERROR_WEIGHT,
+        );
 
         $users = User::query()
             ->select([
                 'users.id',
                 'users.name',
                 'users.email',
+                'users.role',
+                'users.is_active',
             ])
-            ->withCount([
-                'accessLogs as requests_count' => fn (Builder $query) => $query
-                    ->whereBetween('access_logs.created_at', [$from, $to]),
-                'audits as audits_count' => fn (Builder $query) => $query
-                    ->whereBetween('audits.created_at', [$from, $to]),
-                'audits as completed_audits_count' => fn (Builder $query) => $query
-                    ->where('audits.status', Audit::STATUS_COMPLETED)
-                    ->whereBetween('audits.created_at', [$from, $to]),
-                'audits as failed_audits_count' => fn (Builder $query) => $query
-                    ->where('audits.status', Audit::STATUS_FAILED)
-                    ->whereBetween('audits.created_at', [$from, $to]),
-            ])
-            ->selectSub(function ($query) use ($from, $to): void {
-                $query->from('ai_recommendations')
-                    ->join('audits', 'audits.id', '=', 'ai_recommendations.audit_id')
-                    ->join('domains', 'domains.id', '=', 'audits.domain_id')
-                    ->selectRaw('COUNT(*)')
-                    ->whereColumn('domains.user_id', 'users.id')
-                    ->whereBetween('ai_recommendations.created_at', [$from, $to]);
-            }, 'recommendations_count')
-            ->whereHas(
-                'accessLogs',
-                fn (Builder $query) => $query
-                    ->whereBetween('access_logs.created_at', [$from, $to]),
+            ->leftJoinSub($accessUsage, 'access_usage', 'access_usage.user_id', '=', 'users.id')
+            ->leftJoinSub($auditUsage, 'audit_usage', 'audit_usage.user_id', '=', 'users.id')
+            ->leftJoinSub(
+                $recommendationUsage,
+                'recommendation_usage',
+                'recommendation_usage.user_id',
+                '=',
+                'users.id',
             )
-            ->orderByDesc('requests_count')
-            ->orderByDesc('audits_count')
+            ->selectRaw("{$requests} as requests_count")
+            ->selectRaw("{$errors} as error_requests_count")
+            ->selectRaw("{$audits} as audits_count")
+            ->selectRaw('COALESCE(audit_usage.completed_audits_count, 0) as completed_audits_count')
+            ->selectRaw('COALESCE(audit_usage.failed_audits_count, 0) as failed_audits_count')
+            ->selectRaw("{$recommendations} as recommendations_count")
+            ->selectRaw('access_usage.last_seen_at as last_seen_at')
+            ->selectRaw("{$usageScore} as usage_score")
+            ->where(function (Builder $query): void {
+                $query
+                    ->whereNotNull('access_usage.user_id')
+                    ->orWhereNotNull('audit_usage.user_id')
+                    ->orWhereNotNull('recommendation_usage.user_id');
+            })
+            ->orderByRaw("{$usageScore} DESC")
+            ->orderByRaw("{$requests} DESC")
+            ->orderByRaw("{$audits} DESC")
+            ->orderByDesc('access_usage.last_seen_at')
             ->orderBy('users.id')
             ->paginate($perPage);
 
@@ -202,48 +344,33 @@ class AdminAnalyticsController extends Controller
                     'id' => $user->id,
                     'name' => $user->name,
                     'email' => $user->email,
+                    'role' => $user->role,
+                    'is_active' => $user->is_active,
                     'requests_count' => (int) $user->requests_count,
+                    'error_requests_count' => (int) $user->error_requests_count,
                     'audits_count' => (int) $user->audits_count,
                     'completed_audits_count' => (int) $user->completed_audits_count,
                     'failed_audits_count' => (int) $user->failed_audits_count,
                     'recommendations_count' => (int) $user->recommendations_count,
+                    'last_seen_at' => $user->last_seen_at === null
+                        ? null
+                        : CarbonImmutable::parse($user->last_seen_at),
+                    'usage_score' => (int) $user->usage_score,
                 ])
                 ->values()
                 ->all(),
             'pagination' => $this->pagination($users),
             'metadata' => [
+                'period' => $period,
                 'from' => $from,
                 'to' => $to,
-                'ranking' => 'Attributed API request count descending, then audit count descending.',
+                'generated_at' => $to,
+                'ranking' => 'Usage score descending, then API requests, audits, last seen, and user ID.',
+                'usage_score_formula' => 'requests + audits * 10 + recommendations * 8 + errors * 2',
+                'api_activity_available' => true,
+                'data_sources' => ['users', 'access_logs', 'audits', 'ai_recommendations'],
             ],
         ]);
-    }
-
-    /**
-     * @param  array<string, mixed>  $filters
-     * @return array{CarbonImmutable, CarbonImmutable}
-     */
-    private function period(array $filters): array
-    {
-        $to = isset($filters['to'])
-            ? $this->parseBoundary($filters['to'], false)
-            : CarbonImmutable::now();
-        $from = isset($filters['from'])
-            ? $this->parseBoundary($filters['from'], true)
-            : $to->subDays(7);
-
-        return [$from, $to];
-    }
-
-    private function parseBoundary(string $value, bool $start): CarbonImmutable
-    {
-        $date = CarbonImmutable::parse($value);
-
-        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) !== 1) {
-            return $date;
-        }
-
-        return $start ? $date->startOfDay() : $date->endOfDay();
     }
 
     private function perPage(mixed $value): int
@@ -255,6 +382,83 @@ class AdminAnalyticsController extends Controller
     {
         return 'Users with API activity recorded in access logs within the last 15 minutes; '.
             'this is activity-based and not true real-time online presence.';
+    }
+
+    private function trafficBucketExpression(string $granularity): string
+    {
+        if (DB::getDriverName() === 'sqlite') {
+            return $granularity === 'hour'
+                ? "strftime('%Y-%m-%d %H:00:00', created_at)"
+                : "strftime('%Y-%m-%d', created_at)";
+        }
+
+        return $granularity === 'hour'
+            ? "date_trunc('hour', created_at)"
+            : "date_trunc('day', created_at)";
+    }
+
+    /**
+     * @return array<string, array{period: string, requests: int, audits: int, recommendations: int, http_errors: int}>
+     */
+    private function emptyTrafficSeries(
+        CarbonImmutable $from,
+        CarbonImmutable $to,
+        string $granularity,
+    ): array {
+        $series = [];
+        $cursor = $from;
+
+        while ($cursor <= $to) {
+            $key = $this->trafficPeriodKey($cursor, $granularity);
+            $series[$key] = [
+                'period' => $key,
+                'requests' => 0,
+                'audits' => 0,
+                'recommendations' => 0,
+                'http_errors' => 0,
+            ];
+            $cursor = $granularity === 'hour'
+                ? $cursor->addHour()
+                : $cursor->addDay();
+        }
+
+        return $series;
+    }
+
+    /**
+     * @param  array<string, array{period: string, requests: int, audits: int, recommendations: int, http_errors: int}>  $series
+     * @param  Collection<int, mixed>  $rows
+     * @param  list<string>  $metrics
+     */
+    private function mergeTrafficRows(
+        array &$series,
+        Collection $rows,
+        string $granularity,
+        array $metrics,
+    ): void {
+        foreach ($rows as $row) {
+            $key = $this->trafficPeriodKey(
+                CarbonImmutable::parse((string) $row->period),
+                $granularity,
+            );
+
+            if (! isset($series[$key])) {
+                continue;
+            }
+
+            foreach ($metrics as $metric) {
+                $series[$key][$metric] = (int) $row->{$metric};
+            }
+        }
+    }
+
+    private function trafficPeriodKey(
+        CarbonImmutable $period,
+        string $granularity,
+    ): string {
+        return $granularity === 'hour'
+            ? $period->startOfHour()->toIso8601String()
+            : $period->format('Y-m-d');
     }
 
     /**

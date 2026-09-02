@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\LoginRequest;
 use App\Http\Requests\RegisterRequest;
+use App\Models\ActionLog;
 use App\Models\AuthAuditLog;
 use App\Models\User;
+use App\Services\ActionLogger;
 use App\Support\EmailAddress;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -17,6 +19,8 @@ class AuthController extends Controller
 {
     private const DUMMY_PASSWORD_HASH = '$2y$12$wD95k2pP2KnUv2eRsga.O.dOYzIlM/f4JG/07Ts8GBxW0bIhWbMhO';
 
+    public function __construct(private readonly ActionLogger $actionLogger) {}
+
     public function register(RegisterRequest $request): JsonResponse
     {
         $user = User::create([
@@ -26,6 +30,11 @@ class AuthController extends Controller
         ]);
 
         $user->sendEmailVerificationNotification();
+        $this->actionLogger->log(
+            $user,
+            ActionLog::ACTION_USER_REGISTERED,
+            $user,
+        );
 
         return response()->json([
             'message' => 'Registration successful. Please verify your email before logging in.',
@@ -173,5 +182,20 @@ class AuthController extends Controller
                 : Str::limit($request->userAgent(), 1000, ''),
             'status' => $status,
         ]);
+
+        if ($user !== null) {
+            $this->actionLogger->log(
+                $user,
+                match ($event) {
+                    AuthAuditLog::EVENT_LOGOUT => ActionLog::ACTION_USER_LOGGED_OUT,
+                    AuthAuditLog::EVENT_LOGOUT_ALL => ActionLog::ACTION_USER_LOGGED_OUT_ALL,
+                    default => ActionLog::ACTION_USER_LOGGED_IN,
+                },
+                $user,
+                $status === AuthAuditLog::STATUS_SUCCESS
+                    ? ActionLog::STATUS_SUCCESS
+                    : ActionLog::STATUS_FAILURE,
+            );
+        }
     }
 }

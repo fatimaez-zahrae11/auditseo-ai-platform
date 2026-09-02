@@ -43,6 +43,7 @@ class AccessLogTest extends TestCase
     public function test_authenticated_readiness_can_be_logged_without_response_details(): void
     {
         $user = User::factory()->create();
+        $user->forceFill(['role' => User::ROLE_ADMIN])->save();
         $token = $user->createToken('readiness-token');
 
         $this->withToken($token->plainTextToken)

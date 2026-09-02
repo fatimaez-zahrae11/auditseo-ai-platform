@@ -2,11 +2,12 @@
 
 namespace Tests\Feature;
 
+use App\Models\ActionLog;
 use App\Models\AdminActionLog;
+use App\Models\AuthAuditLog;
 use App\Models\User;
-use App\Services\AdminActionLogger;
+use App\Services\ActionLogger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\Sanctum;
@@ -16,14 +17,14 @@ class AdminActionLogApiTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_unauthenticated_user_cannot_view_admin_action_logs(): void
+    public function test_unauthenticated_user_cannot_view_action_logs(): void
     {
         $this->getJson('/api/admin/action-logs')
             ->assertUnauthorized()
             ->assertExactJson(['message' => 'Unauthenticated.']);
     }
 
-    public function test_non_admin_user_cannot_view_admin_action_logs(): void
+    public function test_non_admin_user_cannot_view_action_logs(): void
     {
         Sanctum::actingAs(User::factory()->create());
 
@@ -32,7 +33,7 @@ class AdminActionLogApiTest extends TestCase
             ->assertExactJson(['message' => 'Forbidden']);
     }
 
-    public function test_inactive_admin_cannot_view_admin_action_logs(): void
+    public function test_inactive_admin_cannot_view_action_logs(): void
     {
         Sanctum::actingAs($this->createAdmin(['is_active' => false]));
 
@@ -41,231 +42,316 @@ class AdminActionLogApiTest extends TestCase
             ->assertExactJson(['message' => 'Account disabled']);
     }
 
-    public function test_admin_can_list_action_logs_with_admin_email_and_safe_fields(): void
+    public function test_admin_can_list_unified_action_logs_with_safe_fields(): void
     {
         $admin = $this->createAdmin();
         $target = User::factory()->create();
-        $log = $this->createLog($admin, [
-            'target_type' => 'User',
-            'target_id' => $target->id,
-            'metadata' => ['reason_code' => 'policy'],
-            'ip_address' => '203.0.113.10',
-        ]);
+        app(ActionLogger::class)->log(
+            $admin,
+            AdminActionLog::ACTION_USER_DEACTIVATED,
+            $target,
+            metadata: ['reason_code' => 'policy'],
+        );
         Sanctum::actingAs($admin);
 
         $response = $this->getJson('/api/admin/action-logs')
             ->assertOk()
-            ->assertJsonPath('pagination.total', 1)
-            ->assertJsonPath('action_logs.0.id', $log->id)
-            ->assertJsonPath('action_logs.0.admin_user_id', $admin->id)
-            ->assertJsonPath('action_logs.0.admin_user_email', $admin->email)
-            ->assertJsonPath('action_logs.0.action', AdminActionLog::ACTION_USER_DEACTIVATED)
-            ->assertJsonPath('action_logs.0.target_type', 'User')
-            ->assertJsonPath('action_logs.0.target_id', $target->id)
-            ->assertJsonPath('action_logs.0.metadata.reason_code', 'policy')
-            ->assertJsonPath('action_logs.0.ip_address', '203.0.113.10');
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.actor.id', $admin->id)
+            ->assertJsonPath('data.0.actor.name', $admin->name)
+            ->assertJsonPath('data.0.actor.email', $admin->email)
+            ->assertJsonPath('data.0.actor.role', User::ROLE_ADMIN)
+            ->assertJsonPath('data.0.action', AdminActionLog::ACTION_USER_DEACTIVATED)
+            ->assertJsonPath('data.0.entity_type', 'user')
+            ->assertJsonPath('data.0.entity_id', $target->id)
+            ->assertJsonPath('data.0.status', ActionLog::STATUS_SUCCESS)
+            ->assertJsonPath('data.0.metadata_summary', 'reason code: policy');
 
         $this->assertEqualsCanonicalizing([
             'id',
-            'admin_user_id',
-            'admin_user_email',
+            'actor',
             'action',
-            'target_type',
-            'target_id',
-            'metadata',
-            'ip_address',
+            'entity_type',
+            'entity_id',
+            'status',
+            'metadata_summary',
             'created_at',
-        ], array_keys($response->json('action_logs.0')));
+        ], array_keys($response->json('data.0')));
+        $this->assertEqualsCanonicalizing([
+            'id',
+            'name',
+            'email',
+            'role',
+        ], array_keys($response->json('data.0.actor')));
+    }
+
+    public function test_action_log_filters_are_applied_server_side(): void
+    {
+        $this->travelTo('2026-08-12 12:00:00');
+        $admin = $this->createAdmin();
+        $user = User::factory()->create([
+            'name' => 'Searchable Actor',
+            'email' => 'searchable@example.com',
+        ]);
+        $otherUser = User::factory()->create();
+
+        $matching = $this->createLog($user, [
+            'action' => ActionLog::ACTION_AUDIT_CREATED,
+            'entity_type' => 'audit',
+            'entity_id' => 42,
+            'status' => ActionLog::STATUS_FAILURE,
+            'created_at' => now()->subDay(),
+            'updated_at' => now()->subDay(),
+        ]);
+        $this->createLog($otherUser, [
+            'action' => ActionLog::ACTION_AUDIT_CREATED,
+            'entity_type' => 'audit',
+            'entity_id' => 43,
+            'created_at' => now()->subDay(),
+            'updated_at' => now()->subDay(),
+        ]);
+        $this->createLog($admin, [
+            'action' => AdminActionLog::ACTION_SYSTEM_LOGS_VIEWED,
+            'entity_type' => 'system',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->createLog(null, [
+            'action' => 'system.maintenance',
+            'entity_type' => 'system',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        Sanctum::actingAs($admin);
+
+        $query = http_build_query([
+            'role' => 'user',
+            'actor_user_id' => $user->id,
+            'q' => 'searchable',
+            'action' => ActionLog::ACTION_AUDIT_CREATED,
+            'entity_type' => 'audit',
+            'status' => 'failure',
+            'date_from' => '2026-08-11',
+            'date_to' => '2026-08-11',
+        ]);
+        $this->getJson("/api/admin/action-logs?{$query}")
+            ->assertOk()
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.id', $matching->id);
+
+        $this->assertRoleFilter($admin, 'admin', [$admin->id]);
+        $this->assertRoleFilter($admin, 'user', [$user->id, $otherUser->id]);
+        $this->getJson('/api/admin/action-logs?role=system')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.actor.role', 'system');
+        $this->getJson('/api/admin/action-logs?q=system.logs')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.actor.id', $admin->id);
+    }
+
+    public function test_invalid_action_log_filters_return_validation_errors(): void
+    {
+        Sanctum::actingAs($this->createAdmin());
+
+        $this->getJson('/api/admin/action-logs?actor_user_id=not-a-number')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('actor_user_id');
+        $this->getJson('/api/admin/action-logs?actor_user_id=999999')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('actor_user_id');
+        $this->getJson('/api/admin/action-logs?role=owner')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('role');
+        $this->getJson('/api/admin/action-logs?status=unknown')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('status');
+        $this->getJson('/api/admin/action-logs?date_from=2026-08-12&date_to=2026-08-11')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('date_to');
     }
 
     public function test_action_log_pagination_uses_a_safe_maximum(): void
     {
         $admin = $this->createAdmin();
-        $this->createLogs($admin, 105);
+        foreach (range(1, 105) as $index) {
+            $this->createLog($admin, [
+                'action' => "test.action.{$index}",
+                'created_at' => now()->subSeconds($index),
+                'updated_at' => now()->subSeconds($index),
+            ]);
+        }
         Sanctum::actingAs($admin);
 
         $this->getJson('/api/admin/action-logs?per_page=2&page=2')
             ->assertOk()
-            ->assertJsonCount(2, 'action_logs')
-            ->assertJsonPath('pagination.current_page', 2)
-            ->assertJsonPath('pagination.per_page', 2)
-            ->assertJsonPath('pagination.total', 105);
+            ->assertJsonCount(2, 'data')
+            ->assertJsonPath('meta.current_page', 2)
+            ->assertJsonPath('meta.per_page', 2)
+            ->assertJsonPath('meta.total', 105);
 
         $this->getJson('/api/admin/action-logs?per_page=999')
             ->assertOk()
-            ->assertJsonCount(100, 'action_logs')
-            ->assertJsonPath('pagination.per_page', 100);
+            ->assertJsonCount(100, 'data')
+            ->assertJsonPath('meta.per_page', 100);
     }
 
-    public function test_all_action_log_filters_work(): void
-    {
-        $this->travelTo('2026-08-12 12:00:00');
-        $admin = $this->createAdmin();
-        $otherAdmin = $this->createAdmin();
-        $target = User::factory()->create();
-
-        $matching = $this->createLog($admin, [
-            'action' => AdminActionLog::ACTION_USER_REACTIVATED,
-            'target_type' => 'User',
-            'target_id' => $target->id,
-            'created_at' => now()->subDay(),
-        ]);
-        $this->createLog($otherAdmin, [
-            'action' => AdminActionLog::ACTION_USER_REACTIVATED,
-            'target_type' => 'User',
-            'target_id' => $target->id,
-            'created_at' => now()->subDay(),
-        ]);
-        $this->createLog($admin, [
-            'action' => AdminActionLog::ACTION_SYSTEM_LOGS_VIEWED,
-            'created_at' => now(),
-        ]);
-        Sanctum::actingAs($admin);
-
-        $query = http_build_query([
-            'admin_user_id' => $admin->id,
-            'action' => AdminActionLog::ACTION_USER_REACTIVATED,
-            'target_type' => 'User',
-            'target_id' => $target->id,
-            'created_from' => '2026-08-11',
-            'created_to' => '2026-08-11',
-        ]);
-
-        $this->getJson("/api/admin/action-logs?{$query}")
-            ->assertOk()
-            ->assertJsonPath('pagination.total', 1)
-            ->assertJsonPath('action_logs.0.id', $matching->id);
-    }
-
-    public function test_creating_a_user_writes_an_admin_action_log(): void
+    public function test_admin_actions_are_written_to_legacy_and_unified_logs(): void
     {
         Notification::fake();
         $admin = $this->createAdmin();
         Sanctum::actingAs($admin);
 
-        $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.20'])
-            ->postJson('/api/admin/users', [
-                'name' => 'Audited User',
-                'email' => 'audited@example.com',
-                'password' => 'Password1',
-            ])
-            ->assertCreated();
+        $this->postJson('/api/admin/users', [
+            'name' => 'Audited User',
+            'email' => 'audited@example.com',
+            'password' => 'Password1',
+        ])->assertCreated();
 
         $user = User::query()->where('email', 'audited@example.com')->sole();
-        $this->assertActionLogged(
-            $admin,
-            AdminActionLog::ACTION_USER_CREATED,
-            $user,
-            '203.0.113.20',
-        );
+        $this->assertDatabaseHas('admin_action_logs', [
+            'admin_user_id' => $admin->id,
+            'action' => AdminActionLog::ACTION_USER_CREATED,
+            'target_type' => 'User',
+            'target_id' => $user->id,
+        ]);
+        $this->assertDatabaseHas('action_logs', [
+            'actor_user_id' => $admin->id,
+            'actor_role' => User::ROLE_ADMIN,
+            'action' => AdminActionLog::ACTION_USER_CREATED,
+            'entity_type' => 'user',
+            'entity_id' => $user->id,
+            'status' => ActionLog::STATUS_SUCCESS,
+        ]);
     }
 
-    public function test_deactivating_and_reactivating_a_user_write_action_logs(): void
+    public function test_unified_log_migration_backfills_existing_admin_and_auth_actions(): void
     {
         $admin = $this->createAdmin();
         $user = User::factory()->create();
-        Sanctum::actingAs($admin);
-
-        $this->patchJson("/api/admin/users/{$user->id}/deactivate", [
-            'blocked_reason' => 'Sensitive internal reason',
-        ])->assertOk();
-
-        $this->assertActionLogged(
-            $admin,
-            AdminActionLog::ACTION_USER_DEACTIVATED,
-            $user,
-        );
-        $this->assertNull(AdminActionLog::latest('id')->firstOrFail()->metadata);
-
-        $this->patchJson("/api/admin/users/{$user->id}/reactivate")->assertOk();
-
-        $this->assertActionLogged(
-            $admin,
-            AdminActionLog::ACTION_USER_REACTIVATED,
-            $user,
-        );
-    }
-
-    public function test_viewing_system_logs_and_detailed_health_write_action_logs(): void
-    {
-        $admin = $this->createAdmin();
-        Sanctum::actingAs($admin);
-
-        $this->getJson('/api/admin/system/logs')->assertOk();
-        $this->getJson('/api/admin/system/health-detailed')->assertOk();
-
-        $this->assertDatabaseHas('admin_action_logs', [
+        AdminActionLog::query()->create([
             'admin_user_id' => $admin->id,
             'action' => AdminActionLog::ACTION_SYSTEM_LOGS_VIEWED,
-            'target_type' => null,
-            'target_id' => null,
+            'metadata' => [
+                'lines_returned' => 10,
+                'password' => 'legacy-password',
+            ],
+            'created_at' => now()->subMinute(),
         ]);
-        $this->assertDatabaseHas('admin_action_logs', [
-            'admin_user_id' => $admin->id,
-            'action' => AdminActionLog::ACTION_SYSTEM_HEALTH_VIEWED,
-            'target_type' => null,
-            'target_id' => null,
+        AuthAuditLog::query()->create([
+            'user_id' => $user->id,
+            'email' => $user->email,
+            'event' => AuthAuditLog::EVENT_LOGIN,
+            'status' => AuthAuditLog::STATUS_SUCCESS,
+        ]);
+
+        $migration = require database_path(
+            'migrations/2026_08_31_020000_create_action_logs_table.php',
+        );
+        $migration->down();
+        $migration->up();
+
+        $this->assertDatabaseHas('action_logs', [
+            'actor_user_id' => $admin->id,
+            'actor_role' => User::ROLE_ADMIN,
+            'action' => AdminActionLog::ACTION_SYSTEM_LOGS_VIEWED,
+            'status' => ActionLog::STATUS_SUCCESS,
+        ]);
+        $backfilledAdminLog = ActionLog::query()
+            ->where('actor_user_id', $admin->id)
+            ->where('action', AdminActionLog::ACTION_SYSTEM_LOGS_VIEWED)
+            ->sole();
+        $this->assertSame(['lines_returned' => 10], $backfilledAdminLog->metadata);
+        $this->assertStringNotContainsString('legacy-password', $backfilledAdminLog->toJson());
+        $this->assertDatabaseHas('action_logs', [
+            'actor_user_id' => $user->id,
+            'actor_role' => User::ROLE_USER,
+            'action' => ActionLog::ACTION_USER_LOGGED_IN,
+            'status' => ActionLog::STATUS_SUCCESS,
         ]);
     }
 
-    public function test_sensitive_metadata_keys_are_recursively_removed_on_write_and_read(): void
+    public function test_regular_user_registration_and_login_are_recorded(): void
+    {
+        Notification::fake();
+        $this->postJson('/api/register', [
+            'name' => 'Registered User',
+            'email' => 'registered@example.com',
+            'password' => 'Password1',
+            'password_confirmation' => 'Password1',
+        ])->assertCreated();
+
+        $registered = User::query()->where('email', 'registered@example.com')->sole();
+        $this->assertDatabaseHas('action_logs', [
+            'actor_user_id' => $registered->id,
+            'actor_role' => User::ROLE_USER,
+            'action' => ActionLog::ACTION_USER_REGISTERED,
+            'entity_type' => 'user',
+            'entity_id' => $registered->id,
+            'status' => ActionLog::STATUS_SUCCESS,
+        ]);
+
+        $loginUser = User::factory()->create([
+            'password' => 'Password1',
+            'email_verified_at' => now(),
+        ]);
+        $this->postJson('/api/login', [
+            'email' => $loginUser->email,
+            'password' => 'Password1',
+        ])->assertOk();
+
+        $this->assertDatabaseHas('action_logs', [
+            'actor_user_id' => $loginUser->id,
+            'actor_role' => User::ROLE_USER,
+            'action' => ActionLog::ACTION_USER_LOGGED_IN,
+            'status' => ActionLog::STATUS_SUCCESS,
+        ]);
+    }
+
+    public function test_sensitive_metadata_is_neither_stored_nor_exposed(): void
     {
         $admin = $this->createAdmin();
-        $logger = app(AdminActionLogger::class);
-        $request = Request::create('/api/admin/example', server: [
-            'REMOTE_ADDR' => '203.0.113.30',
-            'HTTP_AUTHORIZATION' => 'Bearer request-token',
-            'HTTP_COOKIE' => 'session=request-cookie',
-        ]);
-
-        $logger->log($admin, 'safe.action', metadata: [
-            'safe_key' => 'safe-value',
+        app(ActionLogger::class)->log($admin, 'safe.action', metadata: [
+            'reason_code' => 'policy',
             'password' => 'password-value',
-            'token' => 'token-value',
+            'access_token' => 'token-value',
             'authorization' => 'Bearer metadata-token',
             'api_key' => 'api-key-value',
-            'secret' => 'secret-value',
             'cookie' => 'cookie-value',
-            'session' => 'session-value',
-            '.env' => 'APP_KEY=env-secret',
-            '.env.APP_KEY' => 'nested-env-secret',
-            'resend_api_key' => 'resend-secret',
-            'ai_provider_api_key' => 'provider-secret',
+            'request_body' => 'request-body-value',
+            'provider_prompt' => 'prompt-value',
+            'provider_payload' => 'payload-value',
             'nested' => [
                 'safe_nested' => true,
-                'access_token' => 'nested-token',
+                'session_secret' => 'nested-secret',
             ],
-        ], request: $request);
+        ]);
 
-        $stored = AdminActionLog::query()->sole();
-        $serialized = $stored->toJson();
-
+        $stored = ActionLog::query()->sole();
         $this->assertSame([
-            'safe_key' => 'safe-value',
+            'reason_code' => 'policy',
             'nested' => ['safe_nested' => true],
         ], $stored->metadata);
-        foreach ($this->sensitiveValues() as $value) {
-            $this->assertStringNotContainsString($value, $serialized);
-        }
 
-        AdminActionLog::query()->whereKey($stored->id)->update([
-            'metadata' => json_encode([
-                'safe_key' => 'still-safe',
-                'password' => 'legacy-password',
-            ]),
-        ]);
         Sanctum::actingAs($admin);
+        $response = $this->getJson('/api/admin/action-logs')
+            ->assertOk()
+            ->assertJsonPath('data.0.metadata_summary', 'reason code: policy')
+            ->assertJsonMissingPath('data.0.metadata');
 
-        $response = $this->getJson('/api/admin/action-logs')->assertOk();
-        $this->assertSame(['safe_key' => 'still-safe'], $response->json('action_logs.0.metadata'));
-        $this->assertStringNotContainsString('legacy-password', $response->getContent());
+        foreach ($this->sensitiveValues() as $value) {
+            $this->assertStringNotContainsString($value, $stored->toJson());
+            $this->assertStringNotContainsString($value, $response->getContent());
+        }
     }
 
-    public function test_admin_action_logging_failure_does_not_break_original_actions(): void
+    public function test_action_logging_failure_does_not_break_original_admin_actions(): void
     {
         Notification::fake();
         $admin = $this->createAdmin();
         Sanctum::actingAs($admin);
+        Schema::drop('action_logs');
         Schema::drop('admin_action_logs');
 
         $this->postJson('/api/admin/users', [
@@ -293,43 +379,47 @@ class AdminActionLogApiTest extends TestCase
     /**
      * @param  array<string, mixed>  $attributes
      */
-    private function createLog(User $admin, array $attributes = []): AdminActionLog
+    private function createLog(?User $actor, array $attributes = []): ActionLog
     {
-        return AdminActionLog::query()->create(array_merge([
-            'admin_user_id' => $admin->id,
-            'action' => AdminActionLog::ACTION_USER_DEACTIVATED,
-            'created_at' => now(),
+        $createdAt = $attributes['created_at'] ?? null;
+        $updatedAt = $attributes['updated_at'] ?? $createdAt;
+        unset($attributes['created_at'], $attributes['updated_at']);
+
+        $log = ActionLog::query()->create(array_merge([
+            'actor_user_id' => $actor?->id,
+            'actor_role' => $actor?->role ?? ActionLog::ROLE_SYSTEM,
+            'actor_name' => $actor?->name,
+            'actor_email' => $actor?->email,
+            'action' => ActionLog::ACTION_USER_LOGGED_IN,
+            'status' => ActionLog::STATUS_SUCCESS,
         ], $attributes));
-    }
 
-    private function createLogs(User $admin, int $count): void
-    {
-        foreach (range(1, $count) as $index) {
-            $this->createLog($admin, [
-                'action' => "test.action.{$index}",
-                'created_at' => now()->subSeconds($index),
-            ]);
+        if ($createdAt !== null) {
+            $log->forceFill([
+                'created_at' => $createdAt,
+                'updated_at' => $updatedAt,
+            ])->save();
         }
-    }
 
-    private function assertActionLogged(
-        User $admin,
-        string $action,
-        User $target,
-        ?string $ipAddress = null,
-    ): void {
-        $this->assertDatabaseHas('admin_action_logs', [
-            'admin_user_id' => $admin->id,
-            'action' => $action,
-            'target_type' => 'User',
-            'target_id' => $target->id,
-            'ip_address' => $ipAddress ?? '127.0.0.1',
-        ]);
+        return $log->refresh();
     }
 
     /**
-     * @return list<string>
+     * @param  list<int>  $expectedActorIds
      */
+    private function assertRoleFilter(User $admin, string $role, array $expectedActorIds): void
+    {
+        Sanctum::actingAs($admin);
+        $response = $this->getJson("/api/admin/action-logs?role={$role}")
+            ->assertOk();
+
+        $this->assertEqualsCanonicalizing(
+            $expectedActorIds,
+            collect($response->json('data'))->pluck('actor.id')->all(),
+        );
+    }
+
+    /** @return list<string> */
     private function sensitiveValues(): array
     {
         return [
@@ -337,16 +427,11 @@ class AdminActionLogApiTest extends TestCase
             'token-value',
             'metadata-token',
             'api-key-value',
-            'secret-value',
             'cookie-value',
-            'session-value',
-            'env-secret',
-            'nested-env-secret',
-            'resend-secret',
-            'provider-secret',
-            'nested-token',
-            'request-token',
-            'request-cookie',
+            'request-body-value',
+            'prompt-value',
+            'payload-value',
+            'nested-secret',
         ];
     }
 }

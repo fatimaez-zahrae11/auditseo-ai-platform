@@ -12,7 +12,39 @@ class AppServiceProvider extends ServiceProvider
 {
     private const PUBLIC_API_REQUESTS_PER_MINUTE = 120;
 
+    private const ANALYTICS_PAGE_VIEWS_PER_IP_PER_MINUTE = 60;
+
+    private const ANALYTICS_PAGE_VIEWS_PER_VISITOR_PER_MINUTE = 30;
+
+    private const ANALYTICS_PAGE_VIEWS_PER_SESSION_PER_MINUTE = 60;
+
+    private const ANALYTICS_PAGE_VIEWS_GLOBAL_PER_MINUTE = 5_000;
+
+    private const PRE_AUTH_REQUESTS_PER_IP_PER_MINUTE = 600;
+
     private const AUTHENTICATED_API_REQUESTS_PER_MINUTE = 300;
+
+    private const DASHBOARD_READ_REQUESTS_PER_MINUTE = 120;
+
+    private const AUDIT_READ_REQUESTS_PER_MINUTE = 120;
+
+    private const RECOMMENDATION_READ_REQUESTS_PER_MINUTE = 120;
+
+    private const RECOMMENDATION_GENERATIONS_PER_AUDIT = 1;
+
+    private const RECOMMENDATION_AUDIT_COOLDOWN_MINUTES = 5;
+
+    private const RECOMMENDATION_GENERATIONS_PER_USER_PER_MINUTE = 10;
+
+    private const RECOMMENDATION_GENERATIONS_PER_USER_PER_DAY = 50;
+
+    private const RECOMMENDATION_GENERATIONS_GLOBAL_PER_MINUTE = 300;
+
+    private const ADMIN_READ_REQUESTS_PER_MINUTE = 240;
+
+    private const ADMIN_MUTATION_REQUESTS_PER_MINUTE = 30;
+
+    private const ADMIN_EXPENSIVE_REQUESTS_PER_MINUTE = 60;
 
     private const LOGIN_ATTEMPTS_PER_EMAIL_AND_IP = 5;
 
@@ -44,6 +76,27 @@ class AppServiceProvider extends ServiceProvider
                 ->by('api-public:'.$request->ip());
         });
 
+        RateLimiter::for('analytics-page-view', function (Request $request) {
+            $visitorId = (string) $request->input('visitor_id', 'missing');
+            $sessionId = (string) $request->input('session_id', 'missing');
+
+            return [
+                Limit::perMinute(self::ANALYTICS_PAGE_VIEWS_PER_IP_PER_MINUTE)
+                    ->by('analytics-page-view:ip:'.$request->ip()),
+                Limit::perMinute(self::ANALYTICS_PAGE_VIEWS_PER_VISITOR_PER_MINUTE)
+                    ->by('analytics-page-view:visitor:'.hash('sha256', $visitorId)),
+                Limit::perMinute(self::ANALYTICS_PAGE_VIEWS_PER_SESSION_PER_MINUTE)
+                    ->by('analytics-page-view:session:'.hash('sha256', $sessionId)),
+                Limit::perMinute(self::ANALYTICS_PAGE_VIEWS_GLOBAL_PER_MINUTE)
+                    ->by('analytics-page-view:global'),
+            ];
+        });
+
+        RateLimiter::for('api-pre-auth', function (Request $request) {
+            return Limit::perMinute(self::PRE_AUTH_REQUESTS_PER_IP_PER_MINUTE)
+                ->by('api-pre-auth:ip:'.$request->ip());
+        });
+
         RateLimiter::for('api-authenticated', function (Request $request) {
             $userId = $request->user()?->getAuthIdentifier();
 
@@ -51,6 +104,80 @@ class AppServiceProvider extends ServiceProvider
                 ->by($userId === null
                     ? 'api-authenticated:ip:'.$request->ip()
                     : 'api-authenticated:user:'.$userId);
+        });
+
+        RateLimiter::for('dashboard-read', function (Request $request) {
+            $userId = $request->user()?->getAuthIdentifier();
+
+            return Limit::perMinute(self::DASHBOARD_READ_REQUESTS_PER_MINUTE)
+                ->by($userId === null
+                    ? 'dashboard-read:ip:'.$request->ip()
+                    : 'dashboard-read:user:'.$userId);
+        });
+
+        RateLimiter::for('audit-read', function (Request $request) {
+            $userId = $request->user()?->getAuthIdentifier();
+
+            return Limit::perMinute(self::AUDIT_READ_REQUESTS_PER_MINUTE)
+                ->by($userId === null
+                    ? 'audit-read:ip:'.$request->ip()
+                    : 'audit-read:user:'.$userId);
+        });
+
+        RateLimiter::for('recommendation-read', function (Request $request) {
+            $userId = $request->user()?->getAuthIdentifier();
+
+            return Limit::perMinute(self::RECOMMENDATION_READ_REQUESTS_PER_MINUTE)
+                ->by($userId === null
+                    ? 'recommendation-read:ip:'.$request->ip()
+                    : 'recommendation-read:user:'.$userId);
+        });
+
+        RateLimiter::for('recommendation-generate-audit', function (Request $request) {
+            $userId = $request->user()?->getAuthIdentifier();
+            $auditId = (string) ($request->route('audit') ?? 'unknown');
+            $actor = $userId === null ? 'ip:'.$request->ip() : 'user:'.$userId;
+
+            return Limit::perMinutes(
+                self::RECOMMENDATION_AUDIT_COOLDOWN_MINUTES,
+                self::RECOMMENDATION_GENERATIONS_PER_AUDIT,
+            )->by('recommendation-generate:audit:'.$actor.':'.$auditId);
+        });
+
+        RateLimiter::for('recommendation-generate-user', function (Request $request) {
+            $userId = $request->user()?->getAuthIdentifier();
+            $actor = $userId === null ? 'ip:'.$request->ip() : 'user:'.$userId;
+
+            return Limit::perMinute(self::RECOMMENDATION_GENERATIONS_PER_USER_PER_MINUTE)
+                ->by('recommendation-generate:user-short:'.$actor);
+        });
+
+        RateLimiter::for('recommendation-generate-daily', function (Request $request) {
+            $userId = $request->user()?->getAuthIdentifier();
+            $actor = $userId === null ? 'ip:'.$request->ip() : 'user:'.$userId;
+
+            return Limit::perDay(self::RECOMMENDATION_GENERATIONS_PER_USER_PER_DAY)
+                ->by('recommendation-generate:user-daily:'.$actor);
+        });
+
+        RateLimiter::for('recommendation-generate-global', function () {
+            return Limit::perMinute(self::RECOMMENDATION_GENERATIONS_GLOBAL_PER_MINUTE)
+                ->by('recommendation-generate:global');
+        });
+
+        RateLimiter::for('admin-read', function (Request $request) {
+            return Limit::perMinute(self::ADMIN_READ_REQUESTS_PER_MINUTE)
+                ->by('admin-read:user:'.$request->user()->getAuthIdentifier());
+        });
+
+        RateLimiter::for('admin-mutation', function (Request $request) {
+            return Limit::perMinute(self::ADMIN_MUTATION_REQUESTS_PER_MINUTE)
+                ->by('admin-mutation:user:'.$request->user()->getAuthIdentifier());
+        });
+
+        RateLimiter::for('admin-expensive', function (Request $request) {
+            return Limit::perMinute(self::ADMIN_EXPENSIVE_REQUESTS_PER_MINUTE)
+                ->by('admin-expensive:user:'.$request->user()->getAuthIdentifier());
         });
 
         RateLimiter::for('login', function (Request $request) {
