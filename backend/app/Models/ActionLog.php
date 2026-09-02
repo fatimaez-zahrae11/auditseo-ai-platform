@@ -25,6 +25,12 @@ class ActionLog extends Model
 
     public const ACTION_USER_LOGGED_IN = 'user.logged_in';
 
+    public const ACTION_GOOGLE_OAUTH_REDIRECT_REQUESTED = 'google.oauth_redirect_requested';
+
+    public const ACTION_GOOGLE_OAUTH_LOGIN = 'google.oauth_login';
+
+    public const ACTION_GOOGLE_OAUTH_ACCOUNT_LINKED = 'google.oauth_account_linked';
+
     public const ACTION_USER_LOGGED_OUT = 'user.logged_out';
 
     public const ACTION_USER_LOGGED_OUT_ALL = 'user.logged_out_all';

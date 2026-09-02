@@ -9,6 +9,10 @@ class AuthAuditLog extends Model
 {
     public const EVENT_LOGIN = 'login';
 
+    public const EVENT_GOOGLE_OAUTH_REDIRECT = 'google_oauth_redirect';
+
+    public const EVENT_GOOGLE_OAUTH_LOGIN = 'google_oauth_login';
+
     public const EVENT_LOGOUT = 'logout';
 
     public const EVENT_LOGOUT_ALL = 'logout_all';

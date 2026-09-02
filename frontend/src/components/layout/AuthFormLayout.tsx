@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
+import { Loader2 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { AuthCardBrand, AuthLayout } from './AuthLayout';
 
@@ -19,8 +20,21 @@ function GoogleMark() {
 }
 
 export function AuthFormLayout({ activeTab, children }: AuthFormLayoutProps) {
-  const { setCurrentView } = useApp();
+  const { setCurrentView, startGoogleOAuth } = useApp();
   const isLogin = activeTab === 'login';
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [googleError, setGoogleError] = useState('');
+
+  const handleGoogleOAuth = async () => {
+    setGoogleError('');
+    setGoogleLoading(true);
+    try {
+      await startGoogleOAuth();
+    } catch {
+      setGoogleError('Google sign-in could not be completed. Please try again.');
+      setGoogleLoading(false);
+    }
+  };
 
   return (
     <AuthLayout>
@@ -37,13 +51,16 @@ export function AuthFormLayout({ activeTab, children }: AuthFormLayoutProps) {
 
         <button
           type="button"
-          disabled
-          aria-disabled="true"
-          className="auth-google-button flex min-h-12 w-full cursor-not-allowed items-center justify-center gap-2.5 rounded-2xl px-4 text-xs font-bold text-white/60"
+          onClick={() => void handleGoogleOAuth()}
+          disabled={googleLoading}
+          aria-busy={googleLoading}
+          className="auth-google-button flex min-h-12 w-full items-center justify-center gap-2.5 rounded-2xl px-4 text-xs font-bold text-white/75 transition-colors hover:text-white disabled:cursor-wait disabled:opacity-60"
         >
-          <GoogleMark />
+          {googleLoading ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" /> : <GoogleMark />}
           {isLogin ? 'Sign In with Google' : 'Sign Up with Google'}
         </button>
+
+        {googleError ? <p className="mt-3 text-center text-xs font-semibold text-rose-200" role="alert">{googleError}</p> : null}
 
         <p className="mt-6 text-center text-xs font-medium text-white/55">
           {isLogin ? "Don't have an account?" : 'Already have an account?'}{' '}

@@ -32,9 +32,13 @@ interface MessageResponse {
   message: string;
 }
 
-interface LoginResponse extends MessageResponse {
+export interface LoginResponse extends MessageResponse {
   user: BackendUser;
   token: string;
+}
+
+interface GoogleRedirectResponse {
+  url: string;
 }
 
 interface MeResponse {
@@ -50,6 +54,13 @@ export const authService = {
   login: (payload: LoginPayload) => apiRequest<LoginResponse>('/login', {
     method: 'POST',
     body: payload,
+  }, { auth: 'none' }),
+
+  googleRedirect: () => apiRequest<GoogleRedirectResponse>('/auth/google/redirect', {}, { auth: 'none' }),
+
+  exchangeGoogleCode: (code: string) => apiRequest<LoginResponse>('/auth/google/exchange', {
+    method: 'POST',
+    body: { code },
   }, { auth: 'none' }),
 
   me: () => apiRequest<MeResponse>('/me', {}, { auth: 'required' }),

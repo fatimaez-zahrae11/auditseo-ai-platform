@@ -14,6 +14,7 @@ import { PageViewTracker } from './components/analytics/PageViewTracker';
 import { LoginPage } from './pages/auth/LoginPage';
 import { RegisterPage } from './pages/auth/RegisterPage';
 import { EmailVerificationPage } from './pages/auth/EmailVerificationPage';
+import { GoogleOAuthCallbackPage } from './pages/auth/GoogleOAuthCallbackPage';
 
 // User Views
 import { UserDashboard } from './pages/user/UserDashboard';
@@ -120,6 +121,15 @@ const AppContent: React.FC = () => {
     return (
       <div className="theme-user min-h-screen bg-gradient-to-br from-[var(--color-canvas)] via-[var(--color-secondary)] to-[var(--color-soft)] text-[var(--color-text)] flex flex-col justify-center">
         <EmailVerificationPage />
+        <ToastContainer />
+      </div>
+    );
+  }
+
+  if (currentView === 'google-callback') {
+    return (
+      <div className="theme-user min-h-screen bg-[var(--color-canvas)] text-[var(--color-text)]">
+        <GoogleOAuthCallbackPage />
         <ToastContainer />
       </div>
     );

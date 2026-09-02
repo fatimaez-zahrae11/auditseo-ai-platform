@@ -23,6 +23,8 @@ interface AppContextType {
   toasts: ToastItem[];
   setCurrentView: (view: ViewType) => void;
   login: (email: string, password: string) => Promise<void>;
+  startGoogleOAuth: () => Promise<void>;
+  completeGoogleOAuth: (code: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<string>;
   resendVerificationEmail: (email: string) => Promise<string>;
   logout: () => Promise<void>;
@@ -51,7 +53,9 @@ const normalizeBackendUser = (user: BackendUser): User => ({
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [currentView, setCurrentView] = useState<ViewType>('login');
+  const [currentView, setCurrentView] = useState<ViewType>(() => (
+    window.location.pathname === '/auth/google/callback' ? 'google-callback' : 'login'
+  ));
   const [authEmailHint, setAuthEmailHint] = useState('');
   const [authNotice, setAuthNotice] = useState('');
   const [authLoading, setAuthLoading] = useState(true);
@@ -75,6 +79,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUnauthorizedHandler(unauthenticated);
 
     const restoreSession = async () => {
+      if (window.location.pathname === '/auth/google/callback') { setAuthLoading(false); return; }
       if (!getAuthToken()) { setAuthLoading(false); return; }
       try {
         const response = await authService.me();
@@ -121,6 +126,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return response.message;
   };
 
+  const startGoogleOAuth = async () => {
+    const response = await authService.googleRedirect();
+    let authorizationUrl: URL;
+    try {
+      authorizationUrl = new URL(response.url);
+    } catch {
+      throw new ApiError('Google sign-in could not be completed. Please try again.', 502);
+    }
+
+    if (authorizationUrl.protocol !== 'https:' || authorizationUrl.hostname !== 'accounts.google.com') {
+      throw new ApiError('Google sign-in could not be completed. Please try again.', 502);
+    }
+
+    window.location.assign(authorizationUrl.toString());
+  };
+
+  const completeGoogleOAuth = async (code: string) => {
+    const response = await authService.exchangeGoogleCode(code);
+    setAuthToken(response.token);
+    const user = normalizeBackendUser(response.user);
+    setCurrentUser(user);
+    setCurrentView(user.role === 'admin' ? 'admin-dashboard' : 'user-home');
+    addToast({ title: `Welcome, ${user.name}`, message: response.message, type: 'success' });
+  };
+
   const resendVerificationEmail = async (email: string) => {
     const response = await authService.resendVerificationEmail(email.trim().toLowerCase());
     setAuthNotice(response.message);
@@ -138,7 +168,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const selectAudit = (id: string, targetView: ViewType = 'audit-detail') => { setSelectedAuditId(id); setCurrentView(targetView); };
   const selectUser = (id: string, targetView: ViewType = 'user-activity') => { setSelectedUserId(id); setCurrentView(targetView); };
 
-  return <AppContext.Provider value={{ currentUser, currentView, authEmailHint, authNotice, authLoading, isAuthenticated: Boolean(currentUser && getAuthToken()), selectedAuditId, selectedUserId, toasts, setCurrentView, login, register, resendVerificationEmail, logout, selectAudit, selectUser, setSelectedUserId, addToast, removeToast }}>{children}</AppContext.Provider>;
+  return <AppContext.Provider value={{ currentUser, currentView, authEmailHint, authNotice, authLoading, isAuthenticated: Boolean(currentUser && getAuthToken()), selectedAuditId, selectedUserId, toasts, setCurrentView, login, startGoogleOAuth, completeGoogleOAuth, register, resendVerificationEmail, logout, selectAudit, selectUser, setSelectedUserId, addToast, removeToast }}>{children}</AppContext.Provider>;
 };
 
 export const useApp = () => {

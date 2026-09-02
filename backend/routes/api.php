@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\AuditController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\EmailVerificationController;
+use App\Http\Controllers\Api\GoogleOAuthController;
 use App\Http\Controllers\Api\HealthCheckController;
 use App\Http\Middleware\ThrottlePreAuthentication;
 use Illuminate\Support\Facades\Route;
@@ -26,6 +27,9 @@ Route::middleware('throttle:api-public')->group(function () {
         ->middleware('throttle:register');
     Route::post('/login', [AuthController::class, 'login'])
         ->middleware('throttle:login');
+    Route::get('/auth/google/redirect', [GoogleOAuthController::class, 'redirect']);
+    Route::get('/auth/google/callback', [GoogleOAuthController::class, 'callback']);
+    Route::post('/auth/google/exchange', [GoogleOAuthController::class, 'exchange']);
     Route::get('/email/verify/{id}/{hash}', [EmailVerificationController::class, 'verify'])
         ->name('verification.verify');
     Route::post('/email/verification-notification', [EmailVerificationController::class, 'resend'])

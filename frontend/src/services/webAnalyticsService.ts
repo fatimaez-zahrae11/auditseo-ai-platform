@@ -26,6 +26,7 @@ const routeDetails: Record<ViewType, { path: string; title: string }> = {
   login: { path: '/login', title: 'Login' },
   register: { path: '/register', title: 'Register' },
   'email-verification': { path: '/email-verification', title: 'Email Verification' },
+  'google-callback': { path: '/auth/google/callback', title: 'Google Sign-In Callback' },
   'admin-dashboard': { path: '/admin/dashboard', title: 'Admin Dashboard' },
   'users-management': { path: '/admin/users', title: 'Users Management' },
   'user-activity': { path: '/admin/users/activity', title: 'User Activity' },

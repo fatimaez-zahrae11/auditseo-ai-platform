@@ -38,6 +38,7 @@ class User extends Authenticatable implements MustVerifyEmail
     protected $fillable = [
         'name',
         'email',
+        'google_id',
         'password',
     ];
 
@@ -50,6 +51,7 @@ class User extends Authenticatable implements MustVerifyEmail
         'blocked_at',
         'blocked_reason',
         'blocked_by',
+        'google_id',
         'password',
         'remember_token',
     ];
