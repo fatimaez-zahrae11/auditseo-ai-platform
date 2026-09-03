@@ -1,5 +1,16 @@
 <?php
 
+$configuredFromName = trim((string) env('MAIL_FROM_NAME', ''));
+$configuredFromAddress = trim((string) env('MAIL_FROM_ADDRESS', ''));
+
+if ($configuredFromName === '' || in_array(strtolower($configuredFromName), ['laravel', 'auditseo'], true)) {
+    $configuredFromName = 'AuditSEO AI Platform';
+}
+
+if ($configuredFromAddress === '' || strtolower($configuredFromAddress) === 'hello@example.com') {
+    $configuredFromAddress = 'no-reply@example.com';
+}
+
 return [
 
     /*
@@ -111,8 +122,8 @@ return [
     */
 
     'from' => [
-        'address' => env('MAIL_FROM_ADDRESS', 'hello@example.com'),
-        'name' => env('MAIL_FROM_NAME', env('APP_NAME', 'Laravel')),
+        'address' => $configuredFromAddress,
+        'name' => $configuredFromName,
     ],
 
 ];

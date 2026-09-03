@@ -1,5 +1,11 @@
 <?php
 
+$configuredAppName = trim((string) env('APP_NAME', ''));
+
+if ($configuredAppName === '' || in_array(strtolower($configuredAppName), ['laravel', 'auditseo'], true)) {
+    $configuredAppName = 'AuditSEO AI Platform';
+}
+
 return [
 
     /*
@@ -13,7 +19,9 @@ return [
     |
     */
 
-    'name' => env('APP_NAME', 'Laravel'),
+    'name' => $configuredAppName,
+
+    'short_name' => env('APP_SHORT_NAME', 'AuditSEO'),
 
     /*
     |--------------------------------------------------------------------------

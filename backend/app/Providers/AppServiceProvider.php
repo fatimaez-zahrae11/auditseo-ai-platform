@@ -6,8 +6,10 @@ use App\Models\User;
 use App\Support\EmailAddress;
 use App\Support\ProductionConfigurationValidator;
 use Illuminate\Auth\Notifications\ResetPassword;
+use Illuminate\Auth\Notifications\VerifyEmail;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
@@ -90,17 +92,38 @@ class AppServiceProvider extends ServiceProvider
             $productionConfiguration->validate();
         }
 
-        ResetPassword::createUrlUsing(function (User $user, string $token): string {
-            $frontendUrl = rtrim(
-                (string) (config('services.frontend.url') ?: 'http://localhost:5173'),
-                '/',
-            );
-            $query = http_build_query([
-                'token' => $token,
-                'email' => $user->getEmailForPasswordReset(),
-            ], '', '&', PHP_QUERY_RFC3986);
+        VerifyEmail::toMailUsing(function (User $user, string $verificationUrl): MailMessage {
+            $shortName = (string) config('app.short_name', 'AuditSEO');
+            $expirationMinutes = (int) config('auth.verification.expire', 60);
 
-            return $frontendUrl.'/reset-password?'.$query;
+            return $this->brandedMailMessage()
+                ->subject("Verify your {$shortName} account")
+                ->greeting('Hello,')
+                ->line("Thank you for creating an {$shortName} account.")
+                ->line('Please verify your email address to activate your account and access the platform.')
+                ->action('Verify Email Address', $verificationUrl)
+                ->line("This verification link will expire in {$expirationMinutes} minutes.")
+                ->line('If you did not create this account, no action is required.')
+                ->salutation("The {$shortName} Team");
+        });
+
+        ResetPassword::createUrlUsing(
+            fn (User $user, string $token): string => $this->passwordResetUrl($user, $token),
+        );
+
+        ResetPassword::toMailUsing(function (User $user, string $token): MailMessage {
+            $shortName = (string) config('app.short_name', 'AuditSEO');
+            $broker = (string) config('auth.defaults.passwords', 'users');
+            $expirationMinutes = (int) config("auth.passwords.{$broker}.expire", 60);
+
+            return $this->brandedMailMessage()
+                ->subject("Reset your {$shortName} password")
+                ->greeting('Hello,')
+                ->line("We received a request to reset the password for your {$shortName} account.")
+                ->action('Reset Password', $this->passwordResetUrl($user, $token))
+                ->line("This password reset link will expire in {$expirationMinutes} minutes.")
+                ->line('If you did not request a password reset, you can safely ignore this email.')
+                ->salutation("The {$shortName} Team");
         });
 
         RateLimiter::for('api-public', function (Request $request) {
@@ -271,5 +294,27 @@ class AppServiceProvider extends ServiceProvider
                     ->by('reset-password:ip:'.$ip),
             ];
         });
+    }
+
+    private function brandedMailMessage(): MailMessage
+    {
+        return (new MailMessage)->from(
+            (string) config('mail.from.address'),
+            (string) config('mail.from.name'),
+        );
+    }
+
+    private function passwordResetUrl(User $user, string $token): string
+    {
+        $frontendUrl = rtrim(
+            (string) (config('services.frontend.url') ?: 'http://localhost:5173'),
+            '/',
+        );
+        $query = http_build_query([
+            'token' => $token,
+            'email' => $user->getEmailForPasswordReset(),
+        ], '', '&', PHP_QUERY_RFC3986);
+
+        return $frontendUrl.'/reset-password?'.$query;
     }
 }
