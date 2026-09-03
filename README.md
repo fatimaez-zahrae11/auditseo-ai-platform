@@ -83,4 +83,8 @@ The full list of requirements is available in [requirements.txt](requirements.tx
 
 ## Production notes
 
-Production deployment is being prepared and is coming soon. Before launch, the project still needs a real domain, HTTPS/TLS, production secrets, Google OAuth production credentials, Resend configuration, database backups, monitoring, and a reverse proxy using Cloudflare, Nginx, or a similar setup.
+Production deployment is being prepared and is coming soon. 
+
+## Personal note :
+
+If the architecture looks a bit serious for an initiation internship project, know that i am an engineer 🤓. We like to understand the problem, design the system, secure the workflow, and then let the code do its job.
