@@ -1,4 +1,5 @@
 .env
+.env.docker
 backend/.env
 frontend/.env
 backend/vendor/

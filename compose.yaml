@@ -1,0 +1,182 @@
+name: auditseo
+
+x-backend-runtime: &backend-runtime
+  image: auditseo-backend:development
+  env_file:
+    - .env.docker.example
+    - path: .env.docker
+      required: false
+  volumes:
+    - backend_storage:/var/www/html/storage
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - .env.docker.example
+      - path: .env.docker
+        required: false
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    shm_size: 128mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - auditseo
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      - auditseo
+
+  backend:
+    <<: *backend-runtime
+    build:
+      context: ./backend
+      target: development
+    restart: unless-stopped
+    expose:
+      - "9000"
+    networks:
+      - auditseo
+
+  migrate:
+    <<: *backend-runtime
+    command: ["php", "artisan", "migrate", "--force", "--no-interaction"]
+    restart: "no"
+    networks:
+      - auditseo
+
+  backend-web:
+    build:
+      context: ./backend
+      target: nginx
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+    volumes:
+      - backend_storage:/var/www/html/storage:ro
+    depends_on:
+      backend:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks:
+      - auditseo
+
+  queue:
+    <<: *backend-runtime
+    command:
+      - php
+      - artisan
+      - queue:work
+      - redis
+      - --queue=default
+      - --sleep=3
+      - --tries=2
+      - --timeout=180
+    restart: unless-stopped
+    stop_grace_period: 300s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - auditseo
+
+  scheduler:
+    <<: *backend-runtime
+    command:
+      - sh
+      - -c
+      - while true; do php artisan schedule:run --no-interaction; sleep 60; done
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - auditseo
+
+  frontend:
+    build:
+      context: ./frontend
+      target: development
+    restart: unless-stopped
+    init: true
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      backend-web:
+        condition: service_healthy
+    networks:
+      - auditseo
+
+  db-admin:
+    image: adminer:5
+    profiles:
+      - tools
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - auditseo
+
+networks:
+  auditseo:
+    driver: bridge
+
+volumes:
+  backend_storage:
+  frontend_node_modules:
+  postgres_data:
+  redis_data:
