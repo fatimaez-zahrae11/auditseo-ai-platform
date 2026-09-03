@@ -1,10 +1,12 @@
 # AuditSEO AI Platform
 
-This project was developed as part of my initiation internship. AuditSEO AI Platform is a web platform that helps users run automated SEO audits and receive AI-assisted recommendations.
+AuditSEO AI Platform is a project I developed during my initiation internship at Marqen Agency. The idea was to build a practical web platform that helps users run SEO audits, understand the main issues on a website, and get AI-assisted recommendations.
 
 ## About the project
 
-The goal was to build a simple platform where users can check websites, review SEO results, and follow useful recommendations from their dashboard.
+The platform helps automate part of the SEO audit work of a digital agency. Users get a clear dashboard where they can review scores, issues, recommendations, and analytics.
+
+The project is currently in its deployment preparation phase.
 
 ## Features
 
@@ -13,36 +15,58 @@ The goal was to build a simple platform where users can check websites, review S
 - Forgot and reset password
 - Google OAuth
 - SEO audit creation
+- SEO scoring
 - AI recommendations
 - User dashboard
 - Admin dashboard
-- Analytics
+- Web analytics
+- IP intelligence and security insights
+- Action logs
 - Docker setup
 
 ## Tech stack
 
-- Backend: Laravel
-- Frontend: React, Vite, and TypeScript
+- Backend: Laravel 12, Laravel Sanctum, Laravel Socialite, and Google OAuth
+- Email: Resend mail integration
+- Frontend: React 19, Vite 6, TypeScript, and Tailwind CSS 4
+- Dynamic globe: Three.js and React Three Fiber
 - Database: PostgreSQL
 - Cache and queues: Redis
-- Containerization: Docker Compose
+- Containers and web server: Docker Compose and Nginx
+- Testing: PHPUnit
+- Dependency tools: Composer and npm
 
 ## Project architecture
 
 ```text
 auditseo-ai-platform/
 ├── backend/
+│   ├── app/
+│   ├── config/
+│   ├── database/
+│   ├── routes/
+│   └── tests/
 ├── frontend/
+│   ├── src/
+│   ├── public/
+│   └── package.json
 ├── docs/
+│   └── docker.md
 ├── compose.yaml
 ├── .env.docker.example
 ├── requirements.txt
 └── README.md
 ```
 
-## Run with Docker
+## Running the project
 
-From the project folder, run:
+There are two ways to run the project.
+
+### Option 1: Run with Docker Compose
+
+This is the recommended and easiest option. Docker runs the Laravel backend, React frontend, PostgreSQL, Redis, queue worker, scheduler, and migration service.
+
+The full Laravel, React, PostgreSQL, Redis, queue, and scheduler stack can run with Docker Compose. See [docs/docker.md](docs/docker.md) for setup, operations, testing, and production guidance.
 
 ```powershell
 copy .env.docker.example .env.docker
@@ -51,25 +75,12 @@ docker compose up --build
 docker compose exec backend php artisan migrate
 ```
 
-The frontend is available at [http://localhost:5173](http://localhost:5173), and the backend API is available at [http://localhost:8000/api](http://localhost:8000/api).
+### Option 2: Run manually without Docker
 
-## Run without Docker
+Manual setup requires PHP, Composer, Node.js/npm, PostgreSQL, and Redis on your computer. You also need to install the project dependencies and configure `backend/.env` and the frontend environment file manually.
 
-For a manual setup, install PHP, Composer, Node.js, PostgreSQL, and Redis locally. Then install the backend and frontend dependencies from their dependency files.
-
-## Requirements
-
-The required tools and dependency files are listed in [requirements.txt](requirements.txt).
+The full list of requirements is available in [requirements.txt](requirements.txt).
 
 ## Production notes
 
-Before using the project in production, it still needs:
-
-- A real domain
-- HTTPS/TLS
-- Production secrets
-- Google OAuth production credentials
-- Resend configuration
-- Database backups
-- Monitoring
-- A reverse proxy using Cloudflare, Nginx, or a similar service
+Production deployment is being prepared and is coming soon. Before launch, the project still needs a real domain, HTTPS/TLS, production secrets, Google OAuth production credentials, Resend configuration, database backups, monitoring, and a reverse proxy using Cloudflare, Nginx, or a similar setup.

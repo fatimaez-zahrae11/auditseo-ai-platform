@@ -1,12 +1,12 @@
 Project Requirements
 
-Recommended Docker setup:
+Docker setup requirements:
 
 - Docker Desktop
 - Docker Compose
 - Git
 
-Manual setup without Docker:
+Manual setup requirements:
 
 - PHP 8.2+
 - Composer
@@ -17,6 +17,6 @@ Manual setup without Docker:
 
 Dependency files:
 
-- Backend dependencies are installed from backend/composer.json and backend/composer.lock.
-- Frontend dependencies are installed from frontend/package.json and frontend/package-lock.json.
-- Docker installs these dependencies automatically inside containers.
+- Backend dependencies: backend/composer.json and backend/composer.lock
+- Frontend dependencies: frontend/package.json and frontend/package-lock.json
+- Docker installs dependencies automatically inside containers
