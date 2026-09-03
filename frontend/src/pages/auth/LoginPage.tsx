@@ -130,9 +130,9 @@ export const LoginPage: React.FC = () => {
             <input type="checkbox" disabled className="auth-checkbox h-4 w-4 rounded" />
             Remember me
           </label>
-          <button type="button" disabled title="Password reset is not available yet" className="cursor-not-allowed font-bold text-orange-200/48">
+          <a href="/forgot-password" className="font-bold text-orange-200 transition-colors hover:text-orange-100">
             Forgot password?
-          </button>
+          </a>
         </div>
 
         <button id="login-submit-btn" type="submit" disabled={isLoading} className="auth-primary-button auth-orange-button inline-flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl px-5 text-sm font-bold">

@@ -2,8 +2,10 @@
 
 namespace App\Providers;
 
+use App\Models\User;
 use App\Support\EmailAddress;
 use App\Support\ProductionConfigurationValidator;
+use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
@@ -59,6 +61,18 @@ class AppServiceProvider extends ServiceProvider
 
     private const VERIFICATION_ATTEMPTS_PER_IP = 20;
 
+    private const FORGOT_PASSWORD_ATTEMPTS_PER_EMAIL_AND_IP = 5;
+
+    private const FORGOT_PASSWORD_ATTEMPTS_PER_EMAIL = 10;
+
+    private const FORGOT_PASSWORD_ATTEMPTS_PER_IP = 20;
+
+    private const RESET_PASSWORD_ATTEMPTS_PER_EMAIL_AND_IP = 5;
+
+    private const RESET_PASSWORD_ATTEMPTS_PER_EMAIL = 10;
+
+    private const RESET_PASSWORD_ATTEMPTS_PER_IP = 20;
+
     /**
      * Register any application services.
      */
@@ -75,6 +89,19 @@ class AppServiceProvider extends ServiceProvider
         if ($this->app->environment('production')) {
             $productionConfiguration->validate();
         }
+
+        ResetPassword::createUrlUsing(function (User $user, string $token): string {
+            $frontendUrl = rtrim(
+                (string) (config('services.frontend.url') ?: 'http://localhost:5173'),
+                '/',
+            );
+            $query = http_build_query([
+                'token' => $token,
+                'email' => $user->getEmailForPasswordReset(),
+            ], '', '&', PHP_QUERY_RFC3986);
+
+            return $frontendUrl.'/reset-password?'.$query;
+        });
 
         RateLimiter::for('api-public', function (Request $request) {
             return Limit::perMinute(self::PUBLIC_API_REQUESTS_PER_MINUTE)
@@ -214,6 +241,34 @@ class AppServiceProvider extends ServiceProvider
                     ->by('auth:verification:email:'.hash('sha256', $email)),
                 Limit::perMinute(self::VERIFICATION_ATTEMPTS_PER_IP)
                     ->by('verification-ip:'.$ip),
+            ];
+        });
+
+        RateLimiter::for('forgot-password', function (Request $request) {
+            $email = EmailAddress::canonicalize((string) $request->input('email'));
+            $ip = (string) $request->ip();
+
+            return [
+                Limit::perMinute(self::FORGOT_PASSWORD_ATTEMPTS_PER_EMAIL_AND_IP)
+                    ->by('forgot-password:email-ip:'.sha1($email.'|'.$ip)),
+                Limit::perMinute(self::FORGOT_PASSWORD_ATTEMPTS_PER_EMAIL)
+                    ->by('forgot-password:email:'.hash('sha256', $email)),
+                Limit::perMinute(self::FORGOT_PASSWORD_ATTEMPTS_PER_IP)
+                    ->by('forgot-password:ip:'.$ip),
+            ];
+        });
+
+        RateLimiter::for('reset-password', function (Request $request) {
+            $email = EmailAddress::canonicalize((string) $request->input('email'));
+            $ip = (string) $request->ip();
+
+            return [
+                Limit::perMinute(self::RESET_PASSWORD_ATTEMPTS_PER_EMAIL_AND_IP)
+                    ->by('reset-password:email-ip:'.sha1($email.'|'.$ip)),
+                Limit::perMinute(self::RESET_PASSWORD_ATTEMPTS_PER_EMAIL)
+                    ->by('reset-password:email:'.hash('sha256', $email)),
+                Limit::perMinute(self::RESET_PASSWORD_ATTEMPTS_PER_IP)
+                    ->by('reset-password:ip:'.$ip),
             ];
         });
     }

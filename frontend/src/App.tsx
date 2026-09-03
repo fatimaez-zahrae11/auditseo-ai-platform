@@ -14,7 +14,9 @@ import { PageViewTracker } from './components/analytics/PageViewTracker';
 import { LoginPage } from './pages/auth/LoginPage';
 import { RegisterPage } from './pages/auth/RegisterPage';
 import { EmailVerificationPage } from './pages/auth/EmailVerificationPage';
+import { ForgotPasswordPage } from './pages/auth/ForgotPasswordPage';
 import { GoogleOAuthCallbackPage } from './pages/auth/GoogleOAuthCallbackPage';
+import { ResetPasswordPage } from './pages/auth/ResetPasswordPage';
 
 // User Views
 import { UserDashboard } from './pages/user/UserDashboard';
@@ -121,6 +123,24 @@ const AppContent: React.FC = () => {
     return (
       <div className="theme-user min-h-screen bg-gradient-to-br from-[var(--color-canvas)] via-[var(--color-secondary)] to-[var(--color-soft)] text-[var(--color-text)] flex flex-col justify-center">
         <EmailVerificationPage />
+        <ToastContainer />
+      </div>
+    );
+  }
+
+  if (currentView === 'forgot-password') {
+    return (
+      <div className="theme-user min-h-screen bg-gradient-to-br from-[var(--color-canvas)] via-[var(--color-secondary)] to-[var(--color-soft)] text-[var(--color-text)] flex flex-col justify-center">
+        <ForgotPasswordPage />
+        <ToastContainer />
+      </div>
+    );
+  }
+
+  if (currentView === 'reset-password') {
+    return (
+      <div className="theme-user min-h-screen bg-gradient-to-br from-[var(--color-canvas)] via-[var(--color-secondary)] to-[var(--color-soft)] text-[var(--color-text)] flex flex-col justify-center">
+        <ResetPasswordPage />
         <ToastContainer />
       </div>
     );

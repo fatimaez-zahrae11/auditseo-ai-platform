@@ -480,6 +480,8 @@ export type ViewType =
   | 'login'
   | 'register'
   | 'email-verification'
+  | 'forgot-password'
+  | 'reset-password'
   | 'google-callback'
   // Admin views
   | 'admin-dashboard'

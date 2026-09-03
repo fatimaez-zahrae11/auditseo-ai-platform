@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\EmailVerificationController;
 use App\Http\Controllers\Api\GoogleOAuthController;
 use App\Http\Controllers\Api\HealthCheckController;
+use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Middleware\ThrottlePreAuthentication;
 use Illuminate\Support\Facades\Route;
 
@@ -34,6 +35,10 @@ Route::middleware('throttle:api-public')->group(function () {
         ->name('verification.verify');
     Route::post('/email/verification-notification', [EmailVerificationController::class, 'resend'])
         ->middleware('throttle:verification');
+    Route::post('/forgot-password', [PasswordResetController::class, 'forgotPassword'])
+        ->middleware('throttle:forgot-password');
+    Route::post('/reset-password', [PasswordResetController::class, 'resetPassword'])
+        ->middleware('throttle:reset-password');
 });
 
 Route::post('/analytics/page-view', [AnalyticsController::class, 'pageView'])

@@ -28,6 +28,13 @@ export interface LoginPayload {
   password: string;
 }
 
+export interface ResetPasswordPayload {
+  email: string;
+  token: string;
+  password: string;
+  password_confirmation: string;
+}
+
 interface MessageResponse {
   message: string;
 }
@@ -52,6 +59,16 @@ export const authService = {
   }, { auth: 'none' }),
 
   login: (payload: LoginPayload) => apiRequest<LoginResponse>('/login', {
+    method: 'POST',
+    body: payload,
+  }, { auth: 'none' }),
+
+  requestPasswordReset: (email: string) => apiRequest<MessageResponse>('/forgot-password', {
+    method: 'POST',
+    body: { email },
+  }, { auth: 'none' }),
+
+  resetPassword: (payload: ResetPasswordPayload) => apiRequest<MessageResponse>('/reset-password', {
     method: 'POST',
     body: payload,
   }, { auth: 'none' }),

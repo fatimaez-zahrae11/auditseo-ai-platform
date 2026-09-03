@@ -37,6 +37,25 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
+const getInitialView = (): ViewType => {
+  switch (window.location.pathname) {
+    case '/auth/google/callback':
+      return 'google-callback';
+    case '/forgot-password':
+      return 'forgot-password';
+    case '/reset-password':
+      return 'reset-password';
+    default:
+      return 'login';
+  }
+};
+
+const isStandalonePublicAuthPath = () => [
+  '/auth/google/callback',
+  '/forgot-password',
+  '/reset-password',
+].includes(window.location.pathname);
+
 const normalizeBackendUser = (user: BackendUser): User => ({
   id: String(user.id), name: user.name, email: user.email,
   role: user.role === 'admin' ? 'admin' : 'user',
@@ -53,9 +72,7 @@ const normalizeBackendUser = (user: BackendUser): User => ({
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [currentView, setCurrentView] = useState<ViewType>(() => (
-    window.location.pathname === '/auth/google/callback' ? 'google-callback' : 'login'
-  ));
+  const [currentView, setCurrentView] = useState<ViewType>(getInitialView);
   const [authEmailHint, setAuthEmailHint] = useState('');
   const [authNotice, setAuthNotice] = useState('');
   const [authLoading, setAuthLoading] = useState(true);
@@ -79,7 +96,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUnauthorizedHandler(unauthenticated);
 
     const restoreSession = async () => {
-      if (window.location.pathname === '/auth/google/callback') { setAuthLoading(false); return; }
+      if (isStandalonePublicAuthPath()) { setAuthLoading(false); return; }
       if (!getAuthToken()) { setAuthLoading(false); return; }
       try {
         const response = await authService.me();
