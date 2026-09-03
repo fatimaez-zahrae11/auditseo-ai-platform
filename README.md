@@ -87,4 +87,4 @@ Production deployment is being prepared and is coming soon.
 
 ## Personal note :
 
-If the architecture looks a bit serious for an initiation internship project, know that i am an engineer 🤓. We like to understand the problem, design the system, secure the workflow, and then let the code do its job.
+If the architecture looks a bit serious for a First-year internship project, just so you know, I am an engineer 🤓. We like to understand the problem, design the system, secure the workflow, and then let the code do its job.
